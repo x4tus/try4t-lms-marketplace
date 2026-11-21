@@ -1,0 +1,71 @@
+### AUTOFILL PROFILES ###,,,,,,
+Profile ID,Name,Site,Hotkey,,,
+c1,Try4T — 1. Tạo Khóa Học Mới,localhost:3000|192\.168\.,Alt + Shift + 1,,,
+c2,Try4T — 2. Cài Đặt Khóa Học & Ảnh Bìa,localhost:3000|192\.168\.,Alt + Shift + 2,,,
+c3,Try4T — 3. Soạn Bài Học (Video & Markdown),localhost:3000|192\.168\.,Alt + Shift + 3,,,
+c4,Try4T — 4. Coupon • Ngân Hàng • Danh Mục,localhost:3000|192\.168\.,Alt + Shift + 4,,,
+c5,Try4T — 5. Đăng Ký Hồ Sơ Giảng Viên,localhost:3000|192\.168\.,Alt + Shift + 5,,,
+
+### AUTOFILL RULES ###,,,,,,
+Rule ID,Type,Name,Value,Site,Mode,Profile
+r1,0,^cc-title$,"Xây Dựng Hệ Thống Microservices NestJS, Kafka & Redis Chuẩn Production",,1,c1
+r2,0,^cc-subtitle$,"Thiết kế kiến trúc phân tán chịu tải cao với NestJS 11, Message Broker, Caching chiến lược, Docker & Giám sát thực tế.",,1,c1
+r3,2,^cc-category$,"""Backend & Kiến trúc hệ thống""",,1,c1
+r4,2,^cc-level$,INTERMEDIATE,,1,c1
+r5,0,^cc-price$,1490000,,1,c1
+r6,0,^cc-sale$,799000,,1,c1
+r7,3,^sequentialLockEnabled$,1,,1,c1
+r8,0,^cs-title$,"Xây Dựng Hệ Thống Microservices NestJS, Kafka & Redis Chuẩn Production",,1,c2
+r9,0,^cs-subtitle$,"Thiết kế kiến trúc phân tán chịu tải cao với NestJS 11, Message Broker, Caching chiến lược, Docker & Giám sát thực tế.",,1,c2
+r10,2,^cs-level$,INTERMEDIATE,,1,c2
+r11,0,^cs-price$,1490000,,1,c2
+r12,0,^cs-sale$,799000,,1,c2
+r13,0,^cs-desc$,"## Điểm nổi bật của khóa học
+
+Khóa học thực chiến giúp bạn làm chủ kiến trúc Backend hiện đại từ thiết kế cơ sở dữ liệu đến vận hành thực tế:
+
+- Xây dựng hệ thống **Microservices** giao tiếp bất đồng bộ qua **Kafka** và **Redis**.
+- Tối ưu truy vấn PostgreSQL, chống Race Condition bằng ACID Transaction & Row Locking.
+- Đóng gói Docker tối ưu, thiết lập CI/CD và giám sát hiệu năng hệ thống.
+- Hoàn thành 100% lộ trình & bài kiểm tra Quiz để nhận **Chứng chỉ PDF + QR xác thực công khai** trên Try4T.",,1,c2
+r14,0,^cs-watch$,80,,1,c2
+r15,0,^thumb-url$,https://images.unsplash.com/photo-1555066931-4365d14bab8c?auto=format&fit=crop&w=1280&q=80,,1,c2
+r16,0,^le-title$,"Bài 1: Kiến trúc Event-Driven & Tối ưu Caching với Redis Cluster",,1,c3
+r17,0,^le-vkey$,https://res.cloudinary.com/demo/video/upload/elephants.mp4,,1,c3
+r18,0,"textarea[placeholder*='Viết nội dung bài đọc']","# Kiến trúc Event-Driven trong hệ thống thực tế
+
+Trong bài học này, chúng ta sẽ tìm hiểu cách tách rời các dịch vụ để tăng khả năng chịu tải và độ ổn định:
+
+```ts
+export interface OrderPaidEvent {
+  orderId: string;
+  userId: string;
+  totalVnd: number;
+  paidAt: string;
+}
+```
+
+### Checklist triển khai
+- Luôn đảm bảo **Idempotency Key** khi xử lý sự kiện thanh toán.
+- Tách biệt luồng ghi (Write) và luồng đọc (Read) khi lưu lượng tăng cao.
+- Ghi log đầy đủ để dễ dàng truy vết và đối soát sự cố.",,1,c3
+r19,0,^cp-code$,TRY4TPRO25,,1,c4
+r20,2,^cp-type$,PERCENT,,1,c4
+r21,0,^cp-val$,25,,1,c4
+r22,0,^cp-max$,250000,,1,c4
+r23,0,^cp-limit$,100,,1,c4
+r24,0,^bk-name$,MB Bank,,1,c4
+r25,0,^bk-no$,090123456789,,1,c4
+r26,0,^bk-holder$,DANG DINH ANH TU,,1,c4
+r27,0,^cat-name$,An ninh mạng & Pentest,,1,c4
+r28,0,^cat-order$,7,,1,c4
+r29,0,^ia-headline$,"Senior Full-Stack Engineer & System Architect (6 năm kinh nghiệm)",,1,c5
+r30,0,^ia-phone$,0901234567,,1,c5
+r31,0,^ia-years$,6,,1,c5
+r32,0,^ia-bio$,"Hơn 6 năm kinh nghiệm thiết kế và vận hành các hệ thống thương mại điện tử và nền tảng SaaS với TypeScript, Next.js, NestJS, Java Spring Boot và PostgreSQL. Đã trực tiếp hướng dẫn hơn 50 lập trình viên trẻ và sinh viên hoàn thiện dự án thực tế đạt loại xuất sắc.",,1,c5
+r33,0,^ia-portfolio$,https://github.com/x4tus,,1,c5
+r34,0,^ia-demo$,https://res.cloudinary.com/demo/video/upload/elephants.mp4,,1,c5
+r35,0,^ia-plan$,"Dự kiến xuất bản khóa học ""Full-Stack Next.js 15 & NestJS Thực Chiến"" gồm 5 chương, 32 bài giảng Video độ phân giải Full HD, tài liệu Markdown kèm code mẫu chuẩn và 4 bài kiểm tra Quiz đánh giá năng lực đầu ra.",,1,c5
+r36,0,^ia-bankName$,MB Bank,,1,c5
+r37,0,^ia-bankNo$,090123456789,,1,c5
+r38,0,^ia-bankOwner$,DANG DINH ANH TU,,1,c5

@@ -1,11 +1,14 @@
+import { parseVideoSource } from '@try4t/shared';
+
 /**
- * Tự động đọc thời lượng thực tế (giây) từ tệp video MP4/MOV/M4V từ xa
- * bằng cách đọc nguyên tử MP4 ISO-BMFF (moov -> mvhd) qua HTTP Range Request.
- * Không phụ thuộc ffmpeg/ffprobe — chạy cực nhẹ (< 512KB RAM) trên Render Free & Windows.
+ * Tự động đọc thời lượng thực tế (giây) từ:
+ * 1. Link YouTube (watch, youtu.be, shorts, embed) — không cần API Key
+ * 2. Link Vimeo — dùng official Vimeo oEmbed API
+ * 3. Tệp video MP4/MOV/M4V trực tiếp (Cloudinary, R2, S3, CDN) — đọc atom MP4 (moov -> mvhd) qua HTTP Range Request
+ * Không phụ thuộc ffmpeg/ffprobe — chạy cực nhẹ trên Render Free & Windows.
  */
 
 function parseMvhdDurationFromBuffer(buf: Buffer): number {
-  let offset = 0;
   const len = buf.length;
 
   const findMvhd = (start: number, end: number): number => {
@@ -16,7 +19,6 @@ function parseMvhdDurationFromBuffer(buf: Buffer): number {
       let headerSize = 8;
 
       if (boxSize === 1 && pos + 16 <= end) {
-        // 64-bit extended box size
         const hi = buf.readUInt32BE(pos + 8);
         const lo = buf.readUInt32BE(pos + 12);
         boxSize = hi * 0x100000000 + lo;
@@ -26,7 +28,6 @@ function parseMvhdDurationFromBuffer(buf: Buffer): number {
       }
 
       if (boxSize < headerSize || pos + boxSize > end) {
-        // Nếu box `moov` lớn hơn buffer hiện tại, vẫn tiếp tục quét bên trong nó!
         if (boxType === 'moov') {
           const inner = findMvhd(pos + headerSize, end);
           if (inner > 0) return inner;
@@ -64,11 +65,9 @@ function parseMvhdDurationFromBuffer(buf: Buffer): number {
     return 0;
   };
 
-  // Thử parse chuẩn theo cấu trúc box từ đầu buffer
-  const structured = findMvhd(offset, len);
+  const structured = findMvhd(0, len);
   if (structured > 0) return structured;
 
-  // Fallback quét trực tiếp chữ ký byte "mvhd" (hữu ích khi tải phần đuôi của file non-faststart MP4)
   const mvhdMarker = Buffer.from('mvhd', 'ascii');
   let searchIdx = 0;
   while (searchIdx < len - 32) {
@@ -113,19 +112,87 @@ async function fetchRangeBuffer(url: string, rangeHeader: string, timeoutMs = 80
   }
 }
 
+async function probeYouTubeDurationSec(videoId: string): Promise<number> {
+  try {
+    const res = await fetch(`https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}&hl=en`, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return 0;
+    const html = await res.text();
+
+    // 1. Chính xác nhất: "lengthSeconds":"312" trong ytInitialPlayerResponse
+    const lenMatch = /"lengthSeconds"\s*:\s*"(\d+)"/.exec(html);
+    if (lenMatch?.[1]) {
+      const sec = Number(lenMatch[1]);
+      if (Number.isFinite(sec) && sec > 0 && sec <= 86_400) return sec;
+    }
+
+    // 2. Fallback: "approxDurationMs":"312400"
+    const msMatch = /"approxDurationMs"\s*:\s*"(\d+)"/.exec(html);
+    if (msMatch?.[1]) {
+      const sec = Math.round(Number(msMatch[1]) / 1000);
+      if (Number.isFinite(sec) && sec > 0 && sec <= 86_400) return sec;
+    }
+
+    // 3. Fallback: ISO 8601 meta duration PT12M34S
+    const isoMatch = /itemprop="duration"\s+content="PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?"/i.exec(html);
+    if (isoMatch) {
+      const sec =
+        Number(isoMatch[1] ?? 0) * 3600 +
+        Number(isoMatch[2] ?? 0) * 60 +
+        Number(isoMatch[3] ?? 0);
+      if (sec > 0 && sec <= 86_400) return sec;
+    }
+  } catch {
+    return 0;
+  }
+  return 0;
+}
+
+async function probeVimeoDurationSec(originalUrl: string): Promise<number> {
+  try {
+    const res = await fetch(
+      `https://vimeo.com/api/oembed.json?url=${encodeURIComponent(originalUrl)}`,
+      { signal: AbortSignal.timeout(6000) },
+    );
+    if (!res.ok) return 0;
+    const json = (await res.json()) as { duration?: number };
+    return typeof json.duration === 'number' && Number.isFinite(json.duration)
+      ? Math.round(json.duration)
+      : 0;
+  } catch {
+    return 0;
+  }
+}
+
 export async function probeRemoteVideoDurationSec(url: string): Promise<number> {
   if (!url || (!url.startsWith('http://') && !url.startsWith('https://'))) {
     return 0;
   }
 
-  // 1. Đọc 512KB đầu (fast-start MP4 — phổ biến trên Cloudinary, R2, S3, GCS)
+  const parsed = parseVideoSource(url);
+  if (parsed?.provider === 'YOUTUBE' && parsed.videoId) {
+    return probeYouTubeDurationSec(parsed.videoId);
+  }
+  if (parsed?.provider === 'VIMEO') {
+    return probeVimeoDurationSec(parsed.originalUrl);
+  }
+  if (parsed?.provider === 'GOOGLE_DRIVE') {
+    return 0;
+  }
+
+  // Direct MP4/MOV/M4V: đọc 512KB đầu (fast-start) hoặc 512KB cuối (non-faststart)
   const headBuf = await fetchRangeBuffer(url, 'bytes=0-524287');
   if (headBuf && headBuf.length > 32) {
     const sec = parseMvhdDurationFromBuffer(headBuf);
     if (sec > 0) return sec;
   }
 
-  // 2. Nếu moov atom nằm ở cuối file (non-faststart MP4), đọc 512KB cuối
   const tailBuf = await fetchRangeBuffer(url, 'bytes=-524288');
   if (tailBuf && tailBuf.length > 32) {
     const sec = parseMvhdDurationFromBuffer(tailBuf);

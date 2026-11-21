@@ -14,10 +14,11 @@ import {
   Video,
   X,
 } from 'lucide-react';
-import { formatDuration, formatVnd, LessonType } from '@try4t/shared';
+import { formatDuration, formatVnd, LessonType, parseVideoSource } from '@try4t/shared';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
+import { UniversalVideoPreview } from '@/components/ui/universal-video-preview';
 import { useAuthStore } from '@/features/auth/auth.store';
 import { useCartStore } from '@/features/cart/cart.store';
 import { api, ApiClientError } from '@/lib/api-client';
@@ -164,16 +165,12 @@ export function FreePreviewModal({
               {data.lesson.type === LessonType.VIDEO && (
                 <div className="bg-black">
                   {data.lesson.playbackUrl ? (
-                    <video
-                      ref={videoRef}
-                      key={data.lesson.id}
-                      src={data.lesson.playbackUrl}
-                      controls
+                    <UniversalVideoPreview
+                      url={data.lesson.playbackUrl}
                       autoPlay
-                      onLoadedMetadata={() => {
-                        if (videoRef.current) videoRef.current.playbackRate = playbackRate;
-                      }}
-                      className="aspect-video max-h-[55vh] w-full"
+                      playbackRate={playbackRate}
+                      videoRef={videoRef}
+                      className="max-h-[55vh]"
                     />
                   ) : (
                     <div className="flex aspect-video items-center justify-center text-sm text-zinc-400">
@@ -185,26 +182,31 @@ export function FreePreviewModal({
                   <div className="flex flex-wrap items-center justify-between gap-2 border-y border-zinc-800 bg-zinc-950 px-5 py-2.5 text-xs">
                     <span className="text-zinc-400">
                       {data.lesson.sectionTitle} • {formatDuration(data.lesson.videoDurationSec)}
+                      {data.lesson.playbackUrl &&
+                        parseVideoSource(data.lesson.playbackUrl)?.provider !== 'DIRECT' &&
+                        ` • ${parseVideoSource(data.lesson.playbackUrl)?.providerLabel}`}
                     </span>
-                    <div className="flex items-center gap-1.5">
-                      <Gauge className="h-3.5 w-3.5 text-emerald-400" />
-                      <span className="mr-1 text-zinc-400">Tốc độ:</span>
-                      {SPEED_OPTIONS.map((rate) => (
-                        <button
-                          key={rate}
-                          type="button"
-                          onClick={() => setPlaybackRate(rate)}
-                          className={cn(
-                            'cursor-pointer rounded px-2 py-0.5 font-mono text-[11px] transition-colors',
-                            playbackRate === rate
-                              ? 'bg-emerald-500 font-bold text-zinc-950'
-                              : 'bg-zinc-900 text-zinc-300 hover:bg-zinc-800',
-                          )}
-                        >
-                          {rate}x
-                        </button>
-                      ))}
-                    </div>
+                    {parseVideoSource(data.lesson.playbackUrl)?.provider === 'DIRECT' && (
+                      <div className="flex items-center gap-1.5">
+                        <Gauge className="h-3.5 w-3.5 text-emerald-400" />
+                        <span className="mr-1 text-zinc-400">Tốc độ:</span>
+                        {SPEED_OPTIONS.map((rate) => (
+                          <button
+                            key={rate}
+                            type="button"
+                            onClick={() => setPlaybackRate(rate)}
+                            className={cn(
+                              'cursor-pointer rounded px-2 py-0.5 font-mono text-[11px] transition-colors',
+                              playbackRate === rate
+                                ? 'bg-emerald-500 font-bold text-zinc-950'
+                                : 'bg-zinc-900 text-zinc-300 hover:bg-zinc-800',
+                            )}
+                          >
+                            {rate}x
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               )}

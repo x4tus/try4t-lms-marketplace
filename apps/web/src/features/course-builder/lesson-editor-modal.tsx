@@ -20,6 +20,7 @@ import {
 import {
   formatDuration,
   LessonType,
+  parseVideoSource,
   QuizQuestionType,
 } from '@try4t/shared';
 import { Badge } from '@/components/ui/badge';
@@ -28,6 +29,7 @@ import { confirmAction } from '@/components/ui/confirm-dialog';
 import { Dialog } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { UniversalVideoPreview } from '@/components/ui/universal-video-preview';
 import { api, ApiClientError } from '@/lib/api-client';
 import { cn } from '@/lib/cn';
 import { notify } from '@/lib/notify';
@@ -194,11 +196,15 @@ export function LessonEditorModal({
   async function handleProbeDurationFromKey(keyOverride?: string) {
     const key = (keyOverride ?? videoStorageKey).trim();
     if (!key) return;
+    const parsed = parseVideoSource(key);
     setProbingDuration(true);
     try {
-      // 1. Thử đọc nhanh trực tiếp qua metadata trình duyệt nếu là HTTPS URL
-      let sec = key.startsWith('http') ? await readVideoDurationFromUrl(key) : 0;
-      // 2. Fallback đọc phía Backend (Cloudinary Admin API / MP4 mvhd Range request)
+      // 1. Direct MP4: thử đọc nhanh trực tiếp qua trình duyệt
+      let sec =
+        parsed?.provider === 'DIRECT' && key.startsWith('http')
+          ? await readVideoDurationFromUrl(key)
+          : 0;
+      // 2. YouTube / Vimeo / Cloudinary / Fallback: đọc phía Backend (không cần API key!)
       if (sec <= 0) {
         const res = await api.post<{ durationSec: number }>('/media/probe-video-duration', {
           storageKey: key,
@@ -208,7 +214,11 @@ export function LessonEditorModal({
       if (sec > 0) {
         setVideoDurationSec(sec);
         setIsDirty(true);
-        notify.success(`Đã tự đọc thời lượng video: ${formatDuration(sec)} (${sec} giây)`);
+        notify.success(
+          `Đã tự đọc thời lượng ${parsed?.providerLabel ?? 'video'}: ${formatDuration(sec)} (${sec} giây)`,
+        );
+      } else if (parsed?.provider === 'GOOGLE_DRIVE') {
+        notify.info('Google Drive không mở công khai thời lượng — bạn có thể nhập tay số giây ở ô bên cạnh.');
       } else {
         notify.warning('Không đọc được thời lượng từ đường dẫn video này');
       }
@@ -396,17 +406,32 @@ export function LessonEditorModal({
               </div>
             )}
 
-            <div className="grid gap-3 sm:grid-cols-[1fr_220px]">
+            <div className="grid gap-3 sm:grid-cols-[1fr_230px]">
               <div className="space-y-1.5">
-                <Label htmlFor="le-vkey">Storage Key hoặc URL Video (Cloudinary / R2 / MP4)</Label>
+                <div className="flex items-center justify-between gap-2">
+                  <Label htmlFor="le-vkey">
+                    URL Video (YouTube, Vimeo, Google Drive, Cloudinary / R2)
+                  </Label>
+                  {videoStorageKey.trim() && (
+                    <Badge variant="secondary" className="text-[10px]">
+                      {parseVideoSource(videoStorageKey)?.providerLabel ?? 'Video'}
+                    </Badge>
+                  )}
+                </div>
                 <Input
                   id="le-vkey"
                   value={videoStorageKey}
                   onChange={(e) => {
                     const nextVal = e.target.value;
                     setVideoStorageKey(nextVal);
-                    if (nextVal.startsWith('http')) {
-                      setPlaybackUrl(nextVal);
+                    if (nextVal.trim().startsWith('http')) {
+                      setPlaybackUrl(nextVal.trim());
+                    }
+                  }}
+                  onPaste={(e) => {
+                    const pasted = e.clipboardData.getData('text').trim();
+                    if (pasted.startsWith('http')) {
+                      window.setTimeout(() => void handleProbeDurationFromKey(pasted), 80);
                     }
                   }}
                   onBlur={() => {
@@ -414,7 +439,7 @@ export function LessonEditorModal({
                       void handleProbeDurationFromKey(videoStorageKey);
                     }
                   }}
-                  placeholder="https://res.cloudinary.com/... hoặc r2:try4t/videos/..."
+                  placeholder="Dán link YouTube, Vimeo, Google Drive hoặc tải file MP4..."
                   className="font-mono text-xs"
                 />
               </div>
@@ -422,7 +447,7 @@ export function LessonEditorModal({
                 <div className="flex items-center justify-between">
                   <Label htmlFor="le-dur" className="flex items-center gap-1">
                     <Clock className="h-3 w-3 text-primary" />
-                    Thời lượng tự đọc
+                    Thời lượng {parseVideoSource(videoStorageKey)?.provider === 'GOOGLE_DRIVE' ? '(giây)' : 'tự đọc'}
                   </Label>
                   {videoStorageKey.trim() && (
                     <button
@@ -438,38 +463,45 @@ export function LessonEditorModal({
                     </button>
                   )}
                 </div>
-                <div className="flex h-10 items-center justify-between rounded-lg border border-input bg-secondary/40 px-3 font-mono text-xs">
-                  <span className="font-bold text-primary">
-                    {probingDuration
-                      ? 'Đang đọc video...'
-                      : videoDurationSec > 0
-                        ? formatDuration(videoDurationSec)
-                        : 'Chưa có video'}
-                  </span>
-                  {videoDurationSec > 0 && !probingDuration && (
-                    <span className="text-[11px] text-muted-foreground">{videoDurationSec}s</span>
-                  )}
-                </div>
+                {parseVideoSource(videoStorageKey)?.provider === 'GOOGLE_DRIVE' ? (
+                  <Input
+                    id="le-dur"
+                    type="number"
+                    min={0}
+                    step={1}
+                    value={videoDurationSec}
+                    onChange={(e) => setVideoDurationSec(Number(e.target.value))}
+                    placeholder="VD: 300"
+                    className="font-mono text-xs"
+                  />
+                ) : (
+                  <div className="flex h-10 items-center justify-between rounded-lg border border-input bg-secondary/40 px-3 font-mono text-xs">
+                    <span className="font-bold text-primary">
+                      {probingDuration
+                        ? 'Đang đọc video...'
+                        : videoDurationSec > 0
+                          ? formatDuration(videoDurationSec)
+                          : 'Chưa có video'}
+                    </span>
+                    {videoDurationSec > 0 && !probingDuration && (
+                      <span className="text-[11px] text-muted-foreground">{videoDurationSec}s</span>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
 
             {playbackUrl && (
               <div className="overflow-hidden rounded-xl border border-border bg-black">
-                <video
-                  src={playbackUrl}
-                  controls
-                  preload="metadata"
-                  onLoadedMetadata={(e) => {
-                    const dur = e.currentTarget.duration;
-                    if (Number.isFinite(dur) && dur > 0) {
-                      const rounded = Math.round(dur);
-                      if (rounded !== videoDurationSec) {
-                        setVideoDurationSec(rounded);
-                        setIsDirty(true);
-                      }
+                <UniversalVideoPreview
+                  url={playbackUrl}
+                  className="max-h-[300px]"
+                  onDirectDurationDetected={(rounded) => {
+                    if (rounded !== videoDurationSec) {
+                      setVideoDurationSec(rounded);
+                      setIsDirty(true);
                     }
                   }}
-                  className="aspect-video max-h-[300px] w-full"
                 />
               </div>
             )}

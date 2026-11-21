@@ -18,6 +18,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Dialog } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
+import { UniversalVideoPreview } from '@/components/ui/universal-video-preview';
 import type { BuilderCourse, BuilderLesson } from '@/features/course-builder/types';
 import { api, ApiClientError } from '@/lib/api-client';
 import { cn } from '@/lib/cn';
@@ -183,17 +184,15 @@ export function ModerationInspectModal({
                     </Badge>
                   </div>
 
-                  {selectedLesson.type === LessonType.VIDEO && (
-                    selectedLesson.playbackUrl ? (
-                      <video
-                        src={selectedLesson.playbackUrl}
-                        controls
-                        className="aspect-video max-h-[260px] w-full rounded-lg bg-black"
+                  {selectedLesson.type === LessonType.VIDEO &&
+                    (selectedLesson.playbackUrl ? (
+                      <UniversalVideoPreview
+                        url={selectedLesson.playbackUrl}
+                        className="max-h-[260px] rounded-lg"
                       />
                     ) : (
                       <p className="text-xs text-destructive">Bài học chưa có video.</p>
-                    )
-                  )}
+                    ))}
 
                   {selectedLesson.type === LessonType.ARTICLE && (
                     <div className="max-h-[260px] overflow-y-auto text-sm leading-relaxed [&_code]:rounded [&_code]:bg-secondary [&_code]:px-1 [&_pre]:rounded-lg [&_pre]:bg-zinc-950 [&_pre]:p-3 [&_pre]:text-zinc-100">

@@ -7,3 +7,4 @@ export * from './schemas/learning.schema';
 export * from './schemas/payout.schema';
 export * from './types/api';
 export * from './utils/format';
+export * from './utils/video-url';
