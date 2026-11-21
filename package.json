@@ -1,0 +1,35 @@
+{
+  "name": "try4t-monorepo",
+  "private": true,
+  "packageManager": "pnpm@10.34.9",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "dev": "turbo run dev",
+    "dev:web": "pnpm --filter @try4t/web dev",
+    "dev:api": "pnpm --filter @try4t/api dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "clean": "turbo run clean",
+    "db:generate": "pnpm --filter @try4t/api db:generate",
+    "db:push": "pnpm --filter @try4t/api db:push",
+    "db:migrate": "pnpm --filter @try4t/api db:migrate",
+    "db:seed": "pnpm --filter @try4t/api db:seed",
+    "db:studio": "pnpm --filter @try4t/api db:studio"
+  },
+  "devDependencies": {
+    "turbo": "^2.5.0",
+    "typescript": "^5.8.2"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@prisma/client",
+      "@prisma/engines",
+      "esbuild",
+      "prisma",
+      "sharp"
+    ]
+  }
+}

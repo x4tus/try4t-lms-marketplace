@@ -1,0 +1,83 @@
+services:
+  - type: web
+    name: try4t-api
+    runtime: node
+    plan: free
+    region: singapore
+    buildCommand: >-
+      corepack enable &&
+      pnpm install --frozen-lockfile &&
+      pnpm --filter @try4t/shared build &&
+      pnpm --filter @try4t/api db:generate &&
+      pnpm --filter @try4t/api build
+    startCommand: pnpm --filter @try4t/api start:prod
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: API_PORT
+        value: "4000"
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: PAYMENT_SANDBOX_ENABLED
+        value: "false"
+      - key: PLATFORM_DEFAULT_FEE_RATE
+        value: "0.30"
+      - key: STORAGE_IMAGE_PROVIDER
+        value: cloudinary
+      - key: STORAGE_VIDEO_PROVIDER
+        value: r2
+      - key: DATABASE_URL
+        sync: false
+      - key: DIRECT_URL
+        sync: false
+      - key: APP_URL
+        sync: false
+      - key: API_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET_NAME
+        value: try4t-media
+      - key: R2_PUBLIC_URL
+        sync: false
+      - key: SEPAY_API_KEY
+        sync: false
+      - key: SEPAY_WEBHOOK_SECRET
+        sync: false
+      - key: VIETQR_BANK_CODE
+        value: MB
+      - key: VIETQR_ACCOUNT_NO
+        sync: false
+      - key: VIETQR_ACCOUNT_NAME
+        value: TRY4T EDUCATION
+      - key: MAIL_PROVIDER
+        value: smtp
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GITHUB_CLIENT_ID
+        sync: false
+      - key: GITHUB_CLIENT_SECRET
+        sync: false
