@@ -1,0 +1,103 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  /* Mac dinh Light Mode: Nen Xanh bac ha (#f0fdf4) + Nhan Ngoc luc bao (#10b981) */
+  --background: #f0fdf4;
+  --foreground: #09090b;
+  --card: #f9fffb;
+  --card-foreground: #09090b;
+  --popover: #f9fffb;
+  --popover-foreground: #09090b;
+  --primary: #10b981;
+  --primary-foreground: #ffffff;
+  --secondary: #e2f5e9;
+  --secondary-foreground: #09090b;
+  --muted: #e5f7ec;
+  --muted-foreground: #4b6358;
+  --accent: #dcfce7;
+  --accent-foreground: #065f46;
+  --destructive: #ef4444;
+  --destructive-foreground: #ffffff;
+  --border: #cce8d6;
+  --input: #cce8d6;
+  --ring: #10b981;
+  --radius: 0.75rem;
+}
+
+.dark {
+  /* Mac dinh Dark Mode: Nen Xanh Rung (#0b1915) + Nhan Ngoc luc bao (#10b981) */
+  --background: #0b1915;
+  --foreground: #f4faf7;
+  --card: #11231e;
+  --card-foreground: #f4faf7;
+  --popover: #11231e;
+  --popover-foreground: #f4faf7;
+  --primary: #10b981;
+  --primary-foreground: #052e16;
+  --secondary: #172e27;
+  --secondary-foreground: #ecfdf5;
+  --muted: #152a24;
+  --muted-foreground: #94b3a7;
+  --accent: #18382e;
+  --accent-foreground: #a7f3d0;
+  --destructive: #dc2626;
+  --destructive-foreground: #ffffff;
+  --border: #203d34;
+  --input: #234238;
+  --ring: #10b981;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --font-sans: var(--font-jakarta), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, SFMono-Regular, monospace;
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+* {
+  border-color: var(--border);
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+@keyframes try4t-toast-shrink {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
