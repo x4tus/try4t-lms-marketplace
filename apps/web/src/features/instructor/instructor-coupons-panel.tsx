@@ -81,8 +81,27 @@ export function InstructorCouponsPanel({ courses }: InstructorCouponsPanelProps)
   const toggleMutation = useMutation({
     mutationFn: ({ id, isActive }: { id: string; isActive: boolean }) =>
       api.patch(`/commerce/coupons/${id}`, { isActive }),
-    onSuccess: () => {
-      notify.success('Đã cập nhật trạng thái mã giảm giá');
+    onMutate: async ({ id, isActive }) => {
+      await queryClient.cancelQueries({ queryKey: ['instructor-coupons'] });
+      const prev = queryClient.getQueryData<CouponItem[]>(['instructor-coupons']);
+      if (prev) {
+        queryClient.setQueryData<CouponItem[]>(
+          ['instructor-coupons'],
+          prev.map((c) => (c.id === id ? { ...c, isActive } : c)),
+        );
+      }
+      return { prev };
+    },
+    onSuccess: (_data, vars) => {
+      notify.success(vars.isActive ? 'Đã bật lại mã giảm giá' : 'Đã tạm khóa mã giảm giá');
+    },
+    onError: (err, _vars, ctx) => {
+      if (ctx?.prev) {
+        queryClient.setQueryData(['instructor-coupons'], ctx.prev);
+      }
+      notify.error(err instanceof ApiClientError ? err.message : 'Đổi trạng thái mã thất bại');
+    },
+    onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ['instructor-coupons'] });
     },
   });

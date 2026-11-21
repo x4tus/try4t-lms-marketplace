@@ -16,7 +16,9 @@ import {
 import { formatDuration, formatVnd, LessonType } from '@try4t/shared';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { CourseThumbnail } from '@/components/ui/course-thumbnail';
 import { Dialog } from '@/components/ui/dialog';
+import { MarkdownPreview, RichTextEditor } from '@/components/ui/rich-text-editor';
 import { Skeleton } from '@/components/ui/skeleton';
 import { UniversalVideoPreview } from '@/components/ui/universal-video-preview';
 import type { BuilderCourse, BuilderLesson } from '@/features/course-builder/types';
@@ -91,20 +93,12 @@ export function ModerationInspectModal({
         <div className="space-y-5">
           {/* Course Summary */}
           <div className="grid gap-4 rounded-xl border border-border bg-secondary/30 p-4 md:grid-cols-[220px_1fr]">
-            <div className="aspect-video overflow-hidden rounded-lg border border-border bg-muted">
-              {course.thumbnailUrl ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={course.thumbnailUrl}
-                  alt={course.title}
-                  className="h-full w-full object-cover"
-                />
-              ) : (
-                <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-                  Chưa có ảnh bìa
-                </div>
-              )}
-            </div>
+            <CourseThumbnail
+              src={course.thumbnailUrl}
+              alt={course.title}
+              compact
+              className="rounded-lg border border-border"
+            />
             <div className="space-y-1.5">
               <div className="flex flex-wrap items-center gap-2">
                 <h3 className="text-base font-bold">{course.title}</h3>
@@ -210,9 +204,10 @@ export function ModerationInspectModal({
                       </p>
                       {selectedLesson.quiz?.questions.map((q, idx) => (
                         <div key={idx} className="rounded-lg border border-border p-2.5">
-                          <p className="font-medium">
-                            Câu {idx + 1}: {q.promptMd}
-                          </p>
+                          <div className="font-medium">
+                            <span className="mr-1 font-mono text-primary">Câu {idx + 1}:</span>
+                            <MarkdownPreview content={q.promptMd} className="inline-block text-xs" />
+                          </div>
                           <ul className="mt-1 space-y-0.5 pl-4">
                             {q.options.map((o, oIdx) => (
                               <li
@@ -239,12 +234,13 @@ export function ModerationInspectModal({
 
           {/* Decision Box */}
           <div className="space-y-3 border-t border-border pt-4">
-            <textarea
-              rows={2}
+            <RichTextEditor
+              compact
+              rows={3}
+              minHeightClass="min-h-[80px]"
               value={note}
-              onChange={(e) => setNote(e.target.value)}
-              placeholder="Ghi chú kiểm duyệt (bắt buộc nhập lý do tối thiểu 5 ký tự nếu Từ chối)..."
-              className="flex w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              onChange={setNote}
+              placeholder="Ghi chú kiểm duyệt / góp ý chi tiết cho giảng viên (bắt buộc ≥ 5 ký tự nếu Từ chối)..."
             />
             <div className="flex flex-wrap items-center justify-end gap-2">
               <Button variant="outline" onClick={onClose} disabled={decideMutation.isPending}>

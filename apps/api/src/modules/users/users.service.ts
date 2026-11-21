@@ -5,16 +5,19 @@ import {
   Prisma,
   Role as PrismaRole,
 } from '@prisma/client';
+import * as bcrypt from 'bcryptjs';
 import type {
   AdminUpdateUserInput,
   AuthUser,
   BecomeInstructorInput,
+  ChangePasswordInput,
   PaginatedResult,
   ReviewInstructorApplicationInput,
   Role,
   UpdateProfileInput,
 } from '@try4t/shared';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
+import { StorageService } from '../../infrastructure/storage/storage.service';
 import { mapAuthUser } from '../auth/auth.service';
 
 const userSelect = {
@@ -57,12 +60,59 @@ export class UsersService {
 
   constructor(
     private readonly prisma: PrismaService,
+    private readonly storage: StorageService,
     configService: ConfigService,
   ) {
     this.defaultFeeRate = configService.get<number>('PLATFORM_DEFAULT_FEE_RATE') ?? 0.3;
   }
 
   async updateProfile(userId: string, input: UpdateProfileInput): Promise<AuthUser> {
+    const existing = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { avatarUrl: true, themeConfig: true },
+    });
+
+    // Merge themeConfig sâu để không bị ghi đè mất các cài đặt riêng tư/học tập khi chỉ đổi màu
+    let nextThemeConfig: Prisma.InputJsonValue | typeof Prisma.DbNull | undefined = undefined;
+    if (input.themeConfig !== undefined) {
+      if (input.themeConfig === null) {
+        nextThemeConfig = Prisma.DbNull;
+      } else {
+        const prev =
+          existing?.themeConfig && typeof existing.themeConfig === 'object'
+            ? (existing.themeConfig as Record<string, unknown>)
+            : {};
+        nextThemeConfig = {
+          ...prev,
+          ...input.themeConfig,
+          ...(input.themeConfig.privacy
+            ? {
+                privacy: {
+                  ...((prev.privacy as Record<string, unknown> | undefined) ?? {}),
+                  ...input.themeConfig.privacy,
+                },
+              }
+            : {}),
+          ...(input.themeConfig.learning
+            ? {
+                learning: {
+                  ...((prev.learning as Record<string, unknown> | undefined) ?? {}),
+                  ...input.themeConfig.learning,
+                },
+              }
+            : {}),
+          ...(input.themeConfig.notifications
+            ? {
+                notifications: {
+                  ...((prev.notifications as Record<string, unknown> | undefined) ?? {}),
+                  ...input.themeConfig.notifications,
+                },
+              }
+            : {}),
+        } as Prisma.InputJsonValue;
+      }
+    }
+
     const updated = await this.prisma.user.update({
       where: { id: userId },
       data: {
@@ -70,18 +120,81 @@ export class UsersService {
         ...(input.headline !== undefined ? { headline: input.headline } : {}),
         ...(input.bio !== undefined ? { bio: input.bio } : {}),
         ...(input.avatarUrl !== undefined ? { avatarUrl: input.avatarUrl } : {}),
-        ...(input.themeConfig !== undefined
-          ? {
-              themeConfig:
-                input.themeConfig === null
-                  ? Prisma.DbNull
-                  : (input.themeConfig as Prisma.InputJsonValue),
-            }
-          : {}),
+        ...(nextThemeConfig !== undefined ? { themeConfig: nextThemeConfig } : {}),
       },
       select: userSelect,
     });
+
+    if (
+      input.avatarUrl !== undefined &&
+      existing?.avatarUrl &&
+      existing.avatarUrl !== input.avatarUrl
+    ) {
+      void this.storage.deleteAsset(existing.avatarUrl);
+    }
+
     return mapAuthUser(updated);
+  }
+
+  async getAccountSecurity(userId: string) {
+    const [user, oauthAccounts, activeSessionsCount] = await Promise.all([
+      this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { passwordHash: true, emailVerifiedAt: true, email: true, createdAt: true },
+      }),
+      this.prisma.oAuthAccount.findMany({
+        where: { userId },
+        select: { provider: true, email: true, createdAt: true },
+      }),
+      this.prisma.refreshToken.count({
+        where: { userId, revokedAt: null, expiresAt: { gt: new Date() } },
+      }),
+    ]);
+
+    if (!user) {
+      throw new NotFoundException('Không tìm thấy tài khoản');
+    }
+
+    return {
+      hasPassword: Boolean(user.passwordHash),
+      emailVerified: Boolean(user.emailVerifiedAt),
+      email: user.email,
+      createdAt: user.createdAt,
+      connectedProviders: oauthAccounts,
+      activeSessionsCount,
+    };
+  }
+
+  async changePassword(userId: string, input: ChangePasswordInput) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, passwordHash: true },
+    });
+
+    if (!user) {
+      throw new NotFoundException('Không tìm thấy tài khoản');
+    }
+
+    if (user.passwordHash) {
+      if (!input.currentPassword || input.currentPassword.length === 0) {
+        throw new BadRequestException('Vui lòng nhập mật khẩu hiện tại');
+      }
+      const valid = await bcrypt.compare(input.currentPassword, user.passwordHash);
+      if (!valid) {
+        throw new BadRequestException('Mật khẩu hiện tại không chính xác');
+      }
+      if (input.currentPassword === input.newPassword) {
+        throw new BadRequestException('Mật khẩu mới không được trùng mật khẩu cũ');
+      }
+    }
+
+    const nextHash = await bcrypt.hash(input.newPassword, 10);
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { passwordHash: nextHash },
+    });
+
+    return { updated: true, hadPasswordBefore: Boolean(user.passwordHash) };
   }
 
   async submitInstructorApplication(

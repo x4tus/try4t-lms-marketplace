@@ -3,7 +3,16 @@
 import * as React from 'react';
 import { useRouter } from 'next/navigation';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Loader2, LogOut, Presentation, Save } from 'lucide-react';
+import {
+  Camera,
+  Loader2,
+  LogOut,
+  Palette,
+  Presentation,
+  Save,
+  Shield,
+  Sliders,
+} from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import {
   Role,
@@ -15,10 +24,13 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { confirmAction } from '@/components/ui/confirm-dialog';
+import { ImageCropModal } from '@/components/ui/image-crop-modal';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { RichTextEditor } from '@/components/ui/rich-text-editor';
 import { useAuthStore } from '@/features/auth/auth.store';
 import { InstructorApplicationForm } from '@/features/auth/instructor-application-form';
+import { useProfileModalStore } from '@/features/auth/profile-modal';
 import { RoleGuard } from '@/features/auth/role-guard';
 import { api, ApiClientError } from '@/lib/api-client';
 import { notify } from '@/lib/notify';
@@ -26,6 +38,8 @@ import { notify } from '@/lib/notify';
 function ProfileContent() {
   const router = useRouter();
   const { user, setUser, logout } = useAuthStore();
+  const openSettings = useProfileModalStore((s) => s.open);
+  const [avatarCropOpen, setAvatarCropOpen] = React.useState(false);
 
   const profileForm = useForm<UpdateProfileInput>({
     resolver: zodResolver(updateProfileSchema),
@@ -43,6 +57,16 @@ function ProfileContent() {
       notify.success('Đã cập nhật hồ sơ cá nhân');
     } catch (err) {
       notify.error(err instanceof ApiClientError ? err.message : 'Cập nhật thất bại');
+    }
+  }
+
+  async function handleAvatarUploaded(url: string) {
+    try {
+      const updated = await api.patch<AuthUser>('/users/me', { avatarUrl: url });
+      setUser(updated);
+      notify.success('Đã cập nhật ảnh đại diện mới!');
+    } catch (err) {
+      notify.error(err instanceof ApiClientError ? err.message : 'Không thể lưu ảnh đại diện');
     }
   }
 
@@ -67,22 +91,65 @@ function ProfileContent() {
 
   if (!user) return null;
 
+  const initials = user.fullName
+    .split(' ')
+    .map((p) => p[0])
+    .slice(-2)
+    .join('')
+    .toUpperCase();
+
   return (
     <div className="mx-auto max-w-4xl space-y-6 px-4 py-10 sm:px-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Hồ sơ cá nhân</h1>
+          <h1 className="text-2xl font-bold tracking-tight">Hồ sơ &amp; Cài đặt tài khoản</h1>
           <p className="text-sm text-muted-foreground">
-            Quản lý thông tin hiển thị, vai trò và bảo mật tài khoản Try4T.
+            Quản lý thông tin hiển thị, giao diện cá nhân hóa, quyền riêng tư và bảo mật Try4T.
           </p>
         </div>
-        <Badge className="px-3 py-1 font-mono">{user.role}</Badge>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => openSettings('appearance')}>
+            <Palette className="h-3.5 w-3.5" /> Giao diện
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => openSettings('privacy')}>
+            <Sliders className="h-3.5 w-3.5" /> Riêng tư &amp; Học tập
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => openSettings('security')}>
+            <Shield className="h-3.5 w-3.5" /> Bảo mật
+          </Button>
+          <Badge className="px-3 py-1 font-mono">{user.role}</Badge>
+        </div>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle>Thông tin cơ bản</CardTitle>
-          <CardDescription>Email đăng nhập: {user.email}</CardDescription>
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center gap-4">
+              <div className="h-16 w-16 overflow-hidden rounded-full border-2 border-primary/40 bg-primary/10">
+                {user.avatarUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={user.avatarUrl}
+                    alt={user.fullName}
+                    referrerPolicy="no-referrer"
+                    className="h-full w-full object-cover"
+                  />
+                ) : (
+                  <div className="flex h-full w-full items-center justify-center text-lg font-bold text-primary">
+                    {initials}
+                  </div>
+                )}
+              </div>
+              <div>
+                <CardTitle>Thông tin cơ bản</CardTitle>
+                <CardDescription>Email đăng nhập: {user.email}</CardDescription>
+              </div>
+            </div>
+            <Button variant="outline" size="sm" onClick={() => setAvatarCropOpen(true)}>
+              <Camera className="h-4 w-4" />
+              {user.avatarUrl ? 'Cắt lại / Đổi ảnh đại diện' : 'Tải ảnh đại diện'}
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
           <form onSubmit={profileForm.handleSubmit(onSaveProfile)} className="space-y-4">
@@ -108,12 +175,13 @@ function ProfileContent() {
 
             <div className="space-y-1.5">
               <Label htmlFor="bio">Giới thiệu ngắn</Label>
-              <textarea
+              <RichTextEditor
                 id="bio"
-                rows={3}
-                className="flex w-full rounded-lg border border-input bg-card px-3.5 py-2 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                rows={4}
+                compact
+                value={profileForm.watch('bio') ?? ''}
+                onChange={(val) => profileForm.setValue('bio', val, { shouldDirty: true })}
                 placeholder="Chia sẻ đôi chút về kinh nghiệm hoặc mục tiêu học tập của bạn..."
-                {...profileForm.register('bio')}
               />
             </div>
 
@@ -157,6 +225,21 @@ function ProfileContent() {
           </CardContent>
         </Card>
       )}
+
+      <ImageCropModal
+        open={avatarCropOpen}
+        onClose={() => setAvatarCropOpen(false)}
+        currentUrl={user.avatarUrl}
+        onUploaded={handleAvatarUploaded}
+        aspect={1}
+        cropShape="round"
+        outputWidth={512}
+        outputHeight={512}
+        fileName="user-avatar-1x1.webp"
+        title="Ảnh đại diện cá nhân (Chuẩn 1:1)"
+        description="Cắt lại ảnh hiện tại, tải ảnh mới lên hoặc dán đường dẫn ảnh."
+        allowUrlMode
+      />
     </div>
   );
 }

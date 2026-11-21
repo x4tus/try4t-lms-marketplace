@@ -251,6 +251,7 @@ model Course {
   status                CourseStatus @default(DRAFT)
   sequentialLockEnabled Boolean      @default(false) @map("sequential_lock_enabled")
   minWatchPercent       Int          @default(80) @map("min_watch_percent")
+  progressionConfig     Json?        @map("progression_config")
   totalDurationSec      Int          @default(0) @map("total_duration_sec")
   totalLessons          Int          @default(0) @map("total_lessons")
   ratingAvg             Decimal      @default(0) @map("rating_avg") @db.Decimal(3, 2)
@@ -303,9 +304,10 @@ model Lesson {
   isFreePreview    Boolean    @default(false) @map("is_free_preview")
   videoStorageKey  String?    @map("video_storage_key")
   videoDurationSec Int        @default(0) @map("video_duration_sec")
-  articleMd        String?    @map("article_md") @db.Text
-  resourcesJson    Json       @default("[]") @map("resources_json")
-  createdAt        DateTime   @default(now()) @map("created_at")
+  articleMd          String?    @map("article_md") @db.Text
+  resourcesJson      Json       @default("[]") @map("resources_json")
+  versionHistoryJson Json       @default("[]") @map("version_history_json")
+  createdAt          DateTime   @default(now()) @map("created_at")
   updatedAt        DateTime   @updatedAt @map("updated_at")
 
   section                 CourseSection    @relation(fields: [sectionId], references: [id], onDelete: Cascade)

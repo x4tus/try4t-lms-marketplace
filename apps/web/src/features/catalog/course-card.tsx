@@ -13,6 +13,7 @@ import {
 import { CourseLevel, formatDuration, formatVnd } from '@try4t/shared';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { CourseThumbnail } from '@/components/ui/course-thumbnail';
 import { useAuthStore } from '@/features/auth/auth.store';
 import { useCartStore } from '@/features/cart/cart.store';
 import type { CatalogCourseCardItem } from './types';
@@ -48,18 +49,11 @@ export function CourseCard({ course, onOpenPreview }: CourseCardProps) {
       {/* 16:9 Thumbnail */}
       <div className="relative aspect-video w-full overflow-hidden bg-secondary">
         <Link href={`/courses/${course.slug}`} className="block h-full w-full">
-          {course.thumbnailUrl ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={course.thumbnailUrl}
-              alt={course.title}
-              className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
-            />
-          ) : (
-            <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-              Try4T Course
-            </div>
-          )}
+          <CourseThumbnail
+            src={course.thumbnailUrl}
+            alt={course.title}
+            imgClassName="transition-transform duration-300 group-hover:scale-105"
+          />
         </Link>
 
         {/* Top Badges */}
@@ -108,16 +102,14 @@ export function CourseCard({ course, onOpenPreview }: CourseCardProps) {
         </div>
 
         <Link href={`/courses/${course.slug}`} className="mt-2 block">
-          <h3 className="line-clamp-2 text-base font-bold leading-snug tracking-tight transition-colors group-hover:text-primary">
+          <h3 className="line-clamp-2 min-h-[2.75rem] text-base font-bold leading-snug tracking-tight transition-colors group-hover:text-primary">
             {course.title}
           </h3>
         </Link>
 
-        {course.subtitle && (
-          <p className="mt-1.5 line-clamp-2 text-xs leading-relaxed text-muted-foreground">
-            {course.subtitle}
-          </p>
-        )}
+        <p className="mt-1.5 line-clamp-2 min-h-[2.25rem] text-xs leading-relaxed text-muted-foreground">
+          {course.subtitle || 'Khóa học thực chiến có lộ trình rõ ràng & chứng chỉ QR xác thực.'}
+        </p>
 
         {/* Instructor */}
         <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">

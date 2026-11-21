@@ -23,6 +23,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { RichTextEditor } from '@/components/ui/rich-text-editor';
 import { api, ApiClientError } from '@/lib/api-client';
 import { cn } from '@/lib/cn';
 import { notify } from '@/lib/notify';
@@ -261,12 +262,13 @@ export function InstructorApplicationForm({ onSubmitted }: InstructorApplication
 
           <div className="space-y-1.5">
             <Label htmlFor="ia-bio">Kinh nghiệm làm việc &amp; Giảng dạy (tối thiểu 30 ký tự) *</Label>
-            <textarea
+            <RichTextEditor
               id="ia-bio"
               rows={3}
+              compact
+              value={form.watch('bio') ?? ''}
+              onChange={(val) => form.setValue('bio', val, { shouldValidate: true })}
               placeholder="Các dự án thực tế bạn đã làm, vị trí từng đảm nhiệm, kinh nghiệm mentoring/chia sẻ..."
-              className="flex w-full rounded-lg border border-input bg-card px-3.5 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              {...form.register('bio')}
             />
             {form.formState.errors.bio && (
               <p className="text-xs text-destructive">{form.formState.errors.bio.message}</p>
@@ -313,12 +315,13 @@ export function InstructorApplicationForm({ onSubmitted }: InstructorApplication
             <Label htmlFor="ia-plan">
               Kế hoạch khóa học đầu tiên dự định xuất bản (tối thiểu 30 ký tự) *
             </Label>
-            <textarea
+            <RichTextEditor
               id="ia-plan"
               rows={3}
+              compact
+              value={form.watch('teachingPlan') ?? ''}
+              onChange={(val) => form.setValue('teachingPlan', val, { shouldValidate: true })}
               placeholder="Tên khóa dự kiến, đối tượng học viên, kết quả đầu ra và số chương dự kiến..."
-              className="flex w-full rounded-lg border border-input bg-card px-3.5 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              {...form.register('teachingPlan')}
             />
             {form.formState.errors.teachingPlan && (
               <p className="text-xs text-destructive">

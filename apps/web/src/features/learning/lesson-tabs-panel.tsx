@@ -23,7 +23,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { confirmAction } from '@/components/ui/confirm-dialog';
 import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
+import { MarkdownPreview, RichTextEditor } from '@/components/ui/rich-text-editor';
 import { useAuthStore } from '@/features/auth/auth.store';
 import { api, ApiClientError } from '@/lib/api-client';
 import { cn } from '@/lib/cn';
@@ -99,7 +99,6 @@ export function LessonTabsPanel({
   const [noteTimestampSec, setNoteTimestampSec] = React.useState(0);
   const [editingNoteId, setEditingNoteId] = React.useState<string | null>(null);
   const [editingNoteText, setEditingNoteText] = React.useState('');
-  const noteTextareaRef = React.useRef<HTMLTextAreaElement | null>(null);
 
   // Q&A state
   const [qTitle, setQTitle] = React.useState('');
@@ -120,7 +119,9 @@ export function LessonTabsPanel({
     if (quickNoteTriggerSec !== null) {
       setActiveTab('notes');
       setNoteTimestampSec(quickNoteTriggerSec);
-      window.setTimeout(() => noteTextareaRef.current?.focus(), 60);
+      window.setTimeout(() => {
+        document.getElementById('ltp-note-editor')?.focus();
+      }, 60);
       onQuickNoteHandled();
     }
   }, [quickNoteTriggerSec, onQuickNoteHandled]);
@@ -204,7 +205,24 @@ export function LessonTabsPanel({
 
   const toggleResolveMutation = useMutation({
     mutationFn: (questionId: string) => api.patch(`/learning/questions/${questionId}/resolve`),
-    onSuccess: () => {
+    onMutate: async (questionId) => {
+      await queryClient.cancelQueries({ queryKey: ['lesson-questions', lessonId] });
+      const prev = queryClient.getQueryData<LessonQuestionItem[]>(['lesson-questions', lessonId]);
+      if (prev) {
+        queryClient.setQueryData<LessonQuestionItem[]>(
+          ['lesson-questions', lessonId],
+          prev.map((q) => (q.id === questionId ? { ...q, isResolved: !q.isResolved } : q)),
+        );
+      }
+      return { prev };
+    },
+    onError: (err, _id, ctx) => {
+      if (ctx?.prev) {
+        queryClient.setQueryData(['lesson-questions', lessonId], ctx.prev);
+      }
+      notify.error(err instanceof ApiClientError ? err.message : 'Không thể đổi trạng thái Q&A');
+    },
+    onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ['lesson-questions', lessonId] });
     },
   });
@@ -289,7 +307,7 @@ export function LessonTabsPanel({
                     onClick={() => {
                       const sec = onCaptureVideoTimestamp();
                       setNoteTimestampSec(sec);
-                      noteTextareaRef.current?.focus();
+                      document.getElementById('ltp-note-editor')?.focus();
                     }}
                     className="h-7 gap-1.5 text-xs text-primary"
                   >
@@ -299,16 +317,18 @@ export function LessonTabsPanel({
                 )}
               </div>
 
-              <Textarea
-                ref={noteTextareaRef}
-                rows={2}
+              <RichTextEditor
+                id="ltp-note-editor"
+                compact
+                rows={3}
+                minHeightClass="min-h-[76px]"
                 value={noteContent}
-                onChange={(e) => setNoteContent(e.target.value)}
-                onFocus={() => {
-                  if (lessonType === LessonType.VIDEO && noteTimestampSec === 0) {
+                onChange={(val) => {
+                  if (lessonType === LessonType.VIDEO && noteTimestampSec === 0 && !noteContent) {
                     const sec = onCaptureVideoTimestamp();
                     if (sec > 0) setNoteTimestampSec(sec);
                   }
+                  setNoteContent(val);
                 }}
                 placeholder="Ghi lại ý chính, đoạn code hoặc kiến thức quan trọng tại giây này..."
               />
@@ -385,10 +405,12 @@ export function LessonTabsPanel({
 
                     {editingNoteId === note.id ? (
                       <div className="space-y-2">
-                        <Textarea
+                        <RichTextEditor
+                          compact
                           rows={2}
+                          minHeightClass="min-h-[68px]"
                           value={editingNoteText}
-                          onChange={(e) => setEditingNoteText(e.target.value)}
+                          onChange={setEditingNoteText}
                         />
                         <div className="flex justify-end gap-1.5">
                           <Button
@@ -413,9 +435,7 @@ export function LessonTabsPanel({
                         </div>
                       </div>
                     ) : (
-                      <p className="whitespace-pre-wrap text-xs leading-relaxed text-foreground/90">
-                        {note.content}
-                      </p>
+                      <MarkdownPreview content={note.content} className="text-xs" />
                     )}
                   </div>
                 ))}
@@ -444,11 +464,13 @@ export function LessonTabsPanel({
                 onChange={(e) => setQTitle(e.target.value)}
                 placeholder="Tiêu đề câu hỏi (VD: Lỗi CORS khi gọi API từ Next.js?)"
               />
-              <Textarea
+              <RichTextEditor
+                compact
                 rows={3}
+                minHeightClass="min-h-[84px]"
                 value={qContent}
-                onChange={(e) => setQContent(e.target.value)}
-                placeholder="Mô tả chi tiết lỗi hoặc đoạn code bạn đang gặp vướng mắc (hỗ trợ Markdown)..."
+                onChange={setQContent}
+                placeholder="Mô tả chi tiết lỗi hoặc đoạn code bạn đang gặp vướng mắc..."
               />
               <div className="flex justify-end">
                 <Button size="sm" type="submit" disabled={createQuestionMutation.isPending}>
@@ -650,10 +672,12 @@ export function LessonTabsPanel({
                   </div>
                 </div>
 
-                <Textarea
+                <RichTextEditor
+                  compact
                   rows={3}
+                  minHeightClass="min-h-[84px]"
                   value={reviewComment}
-                  onChange={(e) => setReviewComment(e.target.value)}
+                  onChange={setReviewComment}
                   placeholder="Chia sẻ cảm nhận chân thực về nội dung, giảng viên và dự án thực chiến của khóa học..."
                 />
 

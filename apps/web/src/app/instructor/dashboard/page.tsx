@@ -5,16 +5,18 @@ import Link from 'next/link';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   AlertCircle,
+  Archive,
   BarChart3,
   BookOpen,
   BookPlus,
   Clock,
-  Image as ImageIcon,
+  Eye,
   Layers,
   LayoutDashboard,
   Pencil,
   TicketPercent,
   Trash2,
+  Users,
   Wallet,
 } from 'lucide-react';
 import { CourseStatus, formatDuration, formatVnd, Role } from '@try4t/shared';
@@ -22,6 +24,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { confirmAction } from '@/components/ui/confirm-dialog';
+import { CourseThumbnail } from '@/components/ui/course-thumbnail';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useAuthStore } from '@/features/auth/auth.store';
 import { RoleGuard } from '@/features/auth/role-guard';
@@ -63,13 +66,46 @@ function InstructorDashboardContent() {
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => api.delete(`/instructor/courses/${id}`),
-    onSuccess: () => {
-      notify.success('Đã xóa khóa học');
+    mutationFn: (id: string) =>
+      api.delete<{ archived?: boolean; message?: string }>(`/instructor/courses/${id}`),
+    onSuccess: (res) => {
+      notify.success(res?.message || (res?.archived ? 'Đã ẩn khóa học khỏi sàn' : 'Đã xóa khóa học'));
       void queryClient.invalidateQueries({ queryKey: ['instructor-courses'] });
     },
     onError: (err) => {
       notify.error(err instanceof ApiClientError ? err.message : 'Xóa khóa học thất bại');
+    },
+  });
+
+  const toggleVisibilityMutation = useMutation({
+    mutationFn: ({ id, archived }: { id: string; archived: boolean }) =>
+      api.patch<{ status: CourseStatus; message: string }>(
+        `/instructor/courses/${id}/visibility`,
+        { archived },
+      ),
+    onMutate: async ({ id, archived }) => {
+      await queryClient.cancelQueries({ queryKey: ['instructor-courses'] });
+      const prev = queryClient.getQueryData<InstructorCourseSummary[]>(['instructor-courses']);
+      if (prev) {
+        queryClient.setQueryData<InstructorCourseSummary[]>(
+          ['instructor-courses'],
+          prev.map((c) =>
+            c.id === id
+              ? { ...c, status: archived ? CourseStatus.ARCHIVED : CourseStatus.PUBLISHED }
+              : c,
+          ),
+        );
+      }
+      return { prev };
+    },
+    onSuccess: (res) => {
+      notify.success(res.message);
+    },
+    onError: (err, _vars, ctx) => {
+      if (ctx?.prev) {
+        queryClient.setQueryData(['instructor-courses'], ctx.prev);
+      }
+      notify.error(err instanceof ApiClientError ? err.message : 'Cập nhật hiển thị thất bại');
     },
   });
 
@@ -185,87 +221,128 @@ function InstructorDashboardContent() {
             </Card>
           ) : (
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-              {courses.map((course) => (
-                <Card key={course.id} className="flex flex-col overflow-hidden">
-                  <div className="relative aspect-video w-full bg-secondary">
-                    {course.thumbnailUrl ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={course.thumbnailUrl}
-                        alt={course.title}
-                        className="h-full w-full object-cover"
-                      />
-                    ) : (
-                      <div className="flex h-full flex-col items-center justify-center text-xs text-muted-foreground">
-                        <ImageIcon className="mb-1.5 h-6 w-6" />
-                        Chưa tải ảnh bìa 16:9
-                      </div>
-                    )}
-                    <div className="absolute left-3 top-3">{getStatusBadge(course.status)}</div>
-                  </div>
+              {courses.map((course) => {
+                const enrolledCount = Math.max(course.enrollmentCount, course._count.enrollments);
+                const hasEnrolled = enrolledCount > 0;
+                const canArchiveToggle =
+                  course.status === CourseStatus.PUBLISHED ||
+                  course.status === CourseStatus.ARCHIVED;
 
-                  <CardHeader className="flex-1 pb-3">
-                    <CardTitle className="line-clamp-2 text-base leading-snug">
-                      {course.title}
-                    </CardTitle>
-                    {course.subtitle && (
-                      <CardDescription className="line-clamp-2">{course.subtitle}</CardDescription>
-                    )}
+                return (
+                  <Card key={course.id} className="flex flex-col overflow-hidden">
+                    <CourseThumbnail src={course.thumbnailUrl} alt={course.title}>
+                      <div className="absolute left-3 top-3">{getStatusBadge(course.status)}</div>
+                      {hasEnrolled && (
+                        <Badge
+                          variant="secondary"
+                          className="absolute right-3 top-3 gap-1 bg-background/85 font-mono text-[10px] backdrop-blur-xs"
+                        >
+                          <Users className="h-3 w-3 text-primary" /> {enrolledCount} HV
+                        </Badge>
+                      )}
+                    </CourseThumbnail>
 
-                    {course.status === CourseStatus.REJECTED && course.latestReviewLog?.note && (
-                      <div className="mt-2 flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-2.5 text-xs text-destructive">
-                        <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                        <span>
-                          <strong>Góp ý Admin:</strong> {course.latestReviewLog.note}
+                    <CardHeader className="flex-1 pb-3">
+                      <CardTitle className="line-clamp-2 min-h-[2.75rem] text-base leading-snug">
+                        {course.title}
+                      </CardTitle>
+                      <CardDescription className="line-clamp-2 min-h-[2.25rem]">
+                        {course.subtitle || 'Chưa có mô tả ngắn cho khóa học này.'}
+                      </CardDescription>
+
+                      {course.status === CourseStatus.REJECTED && course.latestReviewLog?.note && (
+                        <div className="mt-2 flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-2.5 text-xs text-destructive">
+                          <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                          <span>
+                            <strong>Góp ý Admin:</strong> {course.latestReviewLog.note}
+                          </span>
+                        </div>
+                      )}
+                    </CardHeader>
+
+                    <CardContent className="space-y-3 pt-0">
+                      <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+                        <span className="inline-flex items-center gap-1">
+                          <BookOpen className="h-3.5 w-3.5" />
+                          {course._count.sections} chương • {course.totalLessons} bài
+                        </span>
+                        <span className="inline-flex items-center gap-1">
+                          <Clock className="h-3.5 w-3.5" />
+                          {formatDuration(course.totalDurationSec)}
+                        </span>
+                        <span className="ml-auto font-mono font-semibold text-foreground">
+                          {formatVnd(course.salePriceVnd ?? course.priceVnd)}
                         </span>
                       </div>
-                    )}
-                  </CardHeader>
 
-                  <CardContent className="space-y-3 pt-0">
-                    <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-                      <span className="inline-flex items-center gap-1">
-                        <BookOpen className="h-3.5 w-3.5" />
-                        {course._count.sections} chương • {course.totalLessons} bài
-                      </span>
-                      <span className="inline-flex items-center gap-1">
-                        <Clock className="h-3.5 w-3.5" />
-                        {formatDuration(course.totalDurationSec)}
-                      </span>
-                      <span className="ml-auto font-mono font-semibold text-foreground">
-                        {formatVnd(course.salePriceVnd ?? course.priceVnd)}
-                      </span>
-                    </div>
-
-                    <div className="flex items-center gap-2 border-t border-border pt-3">
-                      <Link href={`/instructor/courses/${course.id}/builder`} className="flex-1">
-                        <Button size="sm" className="w-full">
-                          <Pencil className="h-3.5 w-3.5" />
-                          Course Builder
-                        </Button>
-                      </Link>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-                        disabled={deleteMutation.isPending}
-                        onClick={async () => {
-                          const ok = await confirmAction({
-                            title: `Xóa khóa học "${course.title}"?`,
-                            description:
-                              'Hành động này sẽ xóa toàn bộ chương & bài học (hoặc chuyển sang Lưu trữ nếu đã có học viên).',
-                            confirmLabel: 'Xóa khóa học',
-                            destructive: true,
-                          });
-                          if (ok) deleteMutation.mutate(course.id);
-                        }}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </Button>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
+                      <div className="flex items-center gap-2 border-t border-border pt-3">
+                        <Link href={`/instructor/courses/${course.id}/builder`} className="flex-1">
+                          <Button size="sm" className="w-full">
+                            <Pencil className="h-3.5 w-3.5" />
+                            Course Builder
+                          </Button>
+                        </Link>
+                        {hasEnrolled || canArchiveToggle ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            title={
+                              course.status === CourseStatus.ARCHIVED
+                                ? 'Mở bán lại khóa học trên sàn'
+                                : 'Ẩn khỏi sàn (học viên đã mua vẫn học trọn đời)'
+                            }
+                            disabled={toggleVisibilityMutation.isPending}
+                            onClick={async () => {
+                              const archiving = course.status !== CourseStatus.ARCHIVED;
+                              const ok = await confirmAction({
+                                title: archiving
+                                  ? `Ẩn khóa học "${course.title}" khỏi sàn?`
+                                  : `Mở bán lại "${course.title}"?`,
+                                description: archiving
+                                  ? `Khóa học đang có ${enrolledCount} học viên. Ẩn sẽ ngừng bán mới, nhưng mọi học viên đã mua vẫn sở hữu vĩnh viễn và xem đủ bài học.`
+                                  : 'Khóa học sẽ hiển thị công khai trở lại để học viên mới đăng ký.',
+                                confirmLabel: archiving ? 'Ẩn khóa học' : 'Mở bán lại',
+                              });
+                              if (ok) {
+                                toggleVisibilityMutation.mutate({
+                                  id: course.id,
+                                  archived: archiving,
+                                });
+                              }
+                            }}
+                          >
+                            {course.status === CourseStatus.ARCHIVED ? (
+                              <Eye className="h-3.5 w-3.5 text-primary" />
+                            ) : (
+                              <Archive className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
+                            )}
+                          </Button>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            title="Xóa khóa học nháp"
+                            className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                            disabled={deleteMutation.isPending}
+                            onClick={async () => {
+                              const ok = await confirmAction({
+                                title: `Xóa khóa học "${course.title}"?`,
+                                description:
+                                  'Khóa học chưa có học viên sẽ bị xóa vĩnh viễn toàn bộ chương & bài học.',
+                                confirmLabel: 'Xóa khóa học',
+                                destructive: true,
+                              });
+                              if (ok) deleteMutation.mutate(course.id);
+                            }}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
+                );
+              })}
             </div>
           )}
         </div>

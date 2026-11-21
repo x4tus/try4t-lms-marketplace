@@ -29,8 +29,8 @@ import { confirmAction } from '@/components/ui/confirm-dialog';
 import { Dialog } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { RichTextEditor } from '@/components/ui/rich-text-editor';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Textarea } from '@/components/ui/textarea';
 import { api, ApiClientError } from '@/lib/api-client';
 import { notify } from '@/lib/notify';
 
@@ -563,12 +563,16 @@ export function AdminPayoutsPanel() {
             </div>
 
             <div className="space-y-1.5">
-              <Label htmlFor="admin-po-note">Ghi chú / Lý do từ chối (bắt buộc ≥ 5 ký tự nếu từ chối)</Label>
-              <Textarea
+              <Label htmlFor="admin-po-note">
+                Ghi chú / Lý do từ chối (bắt buộc ≥ 5 ký tự nếu từ chối)
+              </Label>
+              <RichTextEditor
                 id="admin-po-note"
-                rows={2}
+                compact
+                rows={3}
+                minHeightClass="min-h-[76px]"
                 value={adminNote}
-                onChange={(e) => setAdminNote(e.target.value)}
+                onChange={setAdminNote}
                 placeholder="VD: Đã chuyển khoản qua MB Bank mã GD #FT2611..."
               />
             </div>

@@ -19,12 +19,56 @@ export interface InstructorProfileDto {
   ratingAvg: number;
 }
 
+export interface UserPrivacyPreferences {
+  showPublicProfile?: boolean;
+  showLearningActivity?: boolean;
+  showCertificatesOnProfile?: boolean;
+}
+
+export interface UserLearningPreferences {
+  defaultPlaybackSpeed?: number;
+  autoPlayNextLesson?: boolean;
+  theaterModeDefault?: boolean;
+}
+
+export interface UserNotificationPreferences {
+  emailCourseUpdates?: boolean;
+  emailQaReplies?: boolean;
+  emailMarketing?: boolean;
+}
+
 export interface ThemeConfig {
   accentColor?: string | null;
   backgroundColor?: string | null;
   lightBackground?: string | null;
   darkBackground?: string | null;
   mode?: 'light' | 'dark' | 'system';
+  density?: 'compact' | 'comfortable' | 'spacious';
+  fontScale?: 'sm' | 'md' | 'lg';
+  reducedMotion?: boolean;
+  privacy?: UserPrivacyPreferences;
+  learning?: UserLearningPreferences;
+  notifications?: UserNotificationPreferences;
+}
+
+export type CourseProgressionMode = 'FREE' | 'LESSON_SEQUENTIAL' | 'SECTION_SEQUENTIAL';
+
+export interface CourseProgressionConfig {
+  mode: CourseProgressionMode;
+  blockFastForward: boolean;
+  maxSeekAheadPercent: number;
+  requireQuizPass: boolean;
+}
+
+export interface LessonVersionSnapshot {
+  version: number;
+  savedAt: string;
+  title: string;
+  type: string;
+  videoStorageKey: string | null;
+  playbackUrl?: string | null;
+  videoDurationSec: number;
+  articleMd: string | null;
 }
 
 export interface AuthUser {

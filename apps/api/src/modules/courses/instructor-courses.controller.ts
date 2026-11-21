@@ -34,7 +34,12 @@ import {
 } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
+import { z } from 'zod';
 import { CoursesService } from './courses.service';
+
+const toggleVisibilitySchema = z.object({
+  archived: z.boolean(),
+});
 
 @ApiTags('Instructor Course Builder')
 @ApiBearerAuth()
@@ -78,9 +83,19 @@ export class InstructorCoursesController {
   }
 
   @Delete(':id')
-  @ApiOperation({ summary: 'Xóa khóa học (hoặc lưu trữ nếu đã có học viên)' })
+  @ApiOperation({ summary: 'Xóa khóa học (hoặc ẩn/lưu trữ vĩnh viễn cho học viên nếu đã có người mua)' })
   remove(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.coursesService.deleteCourse(id, user);
+  }
+
+  @Patch(':id/visibility')
+  @ApiOperation({ summary: 'Ẩn khóa học khỏi sàn (ARCHIVED) hoặc mở bán lại (PUBLISHED)' })
+  toggleVisibility(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Body(new ZodValidationPipe(toggleVisibilitySchema)) body: { archived: boolean },
+  ) {
+    return this.coursesService.toggleCourseVisibility(id, user, body.archived);
   }
 
   @Post(':id/sections')

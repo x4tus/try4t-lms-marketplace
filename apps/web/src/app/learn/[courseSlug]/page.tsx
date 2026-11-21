@@ -7,6 +7,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  Archive,
   ArrowLeft,
   Award,
   CheckCircle2,
@@ -15,18 +16,21 @@ import {
   ChevronRight,
   FileText,
   HelpCircle,
+  History,
   Loader2,
   Lock,
   Maximize2,
   Minimize2,
   ShieldAlert,
+  Sparkles,
   Video,
 } from 'lucide-react';
-import { formatDuration, LessonType } from '@try4t/shared';
+import { CourseStatus, formatDuration, LessonType } from '@try4t/shared';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useAuthStore } from '@/features/auth/auth.store';
 import { RoleGuard } from '@/features/auth/role-guard';
 import { LessonTabsPanel } from '@/features/learning/lesson-tabs-panel';
 import { QuizRunner } from '@/features/learning/quiz-runner';
@@ -44,12 +48,21 @@ function LearningRoomContent() {
   const params = useParams<{ courseSlug: string }>();
   const slug = params.courseSlug;
   const queryClient = useQueryClient();
+  const user = useAuthStore((s) => s.user);
 
+  const learningPrefs = user?.themeConfig?.learning;
   const videoHandleRef = React.useRef<VideoPlayerHandle | null>(null);
   const [activeLessonId, setActiveLessonId] = React.useState<string | null>(null);
-  const [theaterMode, setTheaterMode] = React.useState(false);
+  const [selectedVersion, setSelectedVersion] = React.useState<'current' | number>('current');
+  const [theaterMode, setTheaterMode] = React.useState(
+    Boolean(learningPrefs?.theaterModeDefault),
+  );
   const [expandedSections, setExpandedSections] = React.useState<Record<string, boolean>>({});
   const [quickNoteTriggerSec, setQuickNoteTriggerSec] = React.useState<number | null>(null);
+
+  React.useEffect(() => {
+    setSelectedVersion('current');
+  }, [activeLessonId]);
 
   const {
     data: room,
@@ -61,7 +74,6 @@ function LearningRoomContent() {
     retry: false,
   });
 
-  // Chọn bài học mặc định và mở toàn bộ chương trong sidebar
   React.useEffect(() => {
     if (!room) return;
     if (!activeLessonId && room.initialLessonId) {
@@ -157,8 +169,63 @@ function LearningRoomContent() {
       ? (lessonError.meta as { previousLessonId?: string; previousLessonTitle?: string } | undefined)
       : null;
 
+  const progressionMode =
+    room.course.progressionConfig?.mode ??
+    (room.course.sequentialLockEnabled ? 'LESSON_SEQUENTIAL' : 'FREE');
+  const progressionLabel =
+    progressionMode === 'SECTION_SEQUENTIAL'
+      ? 'Mở khóa theo Chương'
+      : progressionMode === 'LESSON_SEQUENTIAL'
+        ? 'Học tuần tự từng bài'
+        : null;
+
+  const versions = lessonContent?.versions ?? [];
+  const activeVersionSnapshot =
+    selectedVersion === 'current'
+      ? null
+      : versions.find((v) => v.version === selectedVersion) ?? null;
+
+  const displayTitle = activeVersionSnapshot ? activeVersionSnapshot.title : lessonContent?.title;
+  const displayType = activeVersionSnapshot ? activeVersionSnapshot.type : lessonContent?.type;
+  const displayPlaybackUrl = activeVersionSnapshot
+    ? (activeVersionSnapshot.playbackUrl ?? null)
+    : (lessonContent?.playbackUrl ?? null);
+  const displayArticleMd = activeVersionSnapshot
+    ? activeVersionSnapshot.articleMd
+    : lessonContent?.articleMd;
+
   return (
-    <div className="mx-auto max-w-[1540px] space-y-5 px-4 py-5 sm:px-6">
+    <div className="mx-auto max-w-[1540px] space-y-4 px-4 py-5 sm:px-6">
+      {/* Archived Course Lifetime Access Banner */}
+      {room.course.status === CourseStatus.ARCHIVED && (
+        <div className="flex items-center gap-2.5 rounded-xl border border-amber-500/35 bg-amber-500/10 px-4 py-2.5 text-xs text-amber-700 dark:text-amber-300">
+          <Archive className="h-4 w-4 shrink-0" />
+          <span>
+            <strong>Khóa học đã ngừng bán mới trên sàn.</strong> Vì bạn đã đăng ký trước đó, quyền
+            truy cập trọn đời và toàn bộ bài học của bạn vẫn được giữ nguyên đầy đủ.
+          </span>
+        </div>
+      )}
+
+      {/* Permanent Graduate + Newly Added Bonus Lessons Banner */}
+      {room.enrollment.isCertifiedCompleted && (room.enrollment.bonusLessonsRemaining ?? 0) > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-2.5 text-xs text-emerald-700 dark:text-emerald-300">
+          <div className="flex items-center gap-2">
+            <Sparkles className="h-4 w-4 shrink-0" />
+            <span>
+              <strong>Bạn đã tốt nghiệp 100% &amp; sở hữu Chứng chỉ ✓</strong> — Giảng viên vừa
+              thêm <strong>{room.enrollment.bonusLessonsRemaining}</strong> bài giảng bổ sung mới.
+              Bạn có thể học thêm tự do mà không bao giờ bị mất trạng thái hoàn thành hay chứng chỉ!
+            </span>
+          </div>
+          {room.certificate && (
+            <Link href={room.certificate.verifyPath} className="font-semibold underline">
+              Xem chứng chỉ
+            </Link>
+          )}
+        </div>
+      )}
+
       {/* Studio Top Bar */}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border bg-card px-4 py-3 shadow-xs">
         <div className="flex min-w-0 items-center gap-3">
@@ -170,7 +237,7 @@ function LearningRoomContent() {
           </Link>
           <div className="h-5 w-px bg-border" />
           <div className="min-w-0">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <h1 className="truncate text-sm font-bold sm:text-base">{room.course.title}</h1>
               {room.isStaffPreview && (
                 <Badge variant="outline" className="text-[10px]">
@@ -183,14 +250,12 @@ function LearningRoomContent() {
               <strong className="font-mono text-primary">
                 {Math.round(room.enrollment.progressPercent)}%
               </strong>
-              )
-              {room.course.sequentialLockEnabled && ' • Học tuần tự đang bật'}
+              ){progressionLabel && ` • ${progressionLabel}`}
             </p>
           </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">
-          {/* Overall Progress Pill */}
           <div className="hidden items-center gap-2 sm:flex">
             <div className="h-2 w-28 overflow-hidden rounded-full bg-secondary">
               <div
@@ -235,7 +300,7 @@ function LearningRoomContent() {
           theaterMode ? 'grid-cols-1' : 'lg:grid-cols-[1fr_360px]',
         )}
       >
-        {/* LEFT STAGE: LESSON CONTENT + NAVIGATION + BOTTOM TABS */}
+        {/* LEFT STAGE */}
         <div className="min-w-0 space-y-5">
           {loadingLesson ? (
             <Skeleton className="aspect-video w-full rounded-2xl" />
@@ -243,18 +308,18 @@ function LearningRoomContent() {
             <Card className="border-amber-500/30">
               <CardContent className="flex flex-col items-center justify-center py-16 text-center">
                 <Lock className="mb-3 h-10 w-10 text-amber-500" />
-                <h2 className="text-lg font-bold">Bài học đang được khóa tuần tự</h2>
+                <h2 className="text-lg font-bold">Bài học đang được khóa theo lộ trình</h2>
                 <p className="mt-1.5 max-w-md text-sm text-muted-foreground">
                   {lessonError instanceof ApiClientError
                     ? lessonError.message
-                    : 'Vui lòng hoàn thành bài học trước đó để mở khóa bài này.'}
+                    : 'Vui lòng hoàn thành các bài học yêu cầu trước đó để mở khóa bài này.'}
                 </p>
                 {lockedMeta?.previousLessonId && (
                   <Button
                     className="mt-5"
                     onClick={() => setActiveLessonId(lockedMeta.previousLessonId!)}
                   >
-                    Mở bài trước: {lockedMeta.previousLessonTitle || 'Bài học trước'}
+                    Mở bài cần hoàn thành: {lockedMeta.previousLessonTitle || 'Bài học trước'}
                   </Button>
                 )}
               </CardContent>
@@ -265,7 +330,7 @@ function LearningRoomContent() {
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <p className="text-xs font-medium text-primary">{lessonContent.sectionTitle}</p>
-                  <h2 className="text-xl font-bold tracking-tight">{lessonContent.title}</h2>
+                  <h2 className="text-xl font-bold tracking-tight">{displayTitle}</h2>
                 </div>
                 {lessonContent.progress.isCompleted && (
                   <Badge variant="success" className="gap-1">
@@ -274,62 +339,132 @@ function LearningRoomContent() {
                 )}
               </div>
 
-              {/* Stage Content by LessonType */}
-              {lessonContent.type === LessonType.VIDEO && (
+              {/* Parallel Version Switcher (Old vs Updated) */}
+              {versions.length > 0 && (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-primary/25 bg-primary/5 px-3.5 py-2.5 text-xs">
+                  <div className="flex items-center gap-1.5 font-medium text-foreground">
+                    <History className="h-4 w-4 text-primary" />
+                    <span>Bài học có bản cập nhật mới — xem song song:</span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedVersion('current')}
+                      className={cn(
+                        'cursor-pointer rounded-lg px-2.5 py-1 text-xs font-medium transition-colors',
+                        selectedVersion === 'current'
+                          ? 'bg-primary text-primary-foreground shadow-xs'
+                          : 'border border-border bg-card text-muted-foreground hover:text-foreground',
+                      )}
+                    >
+                      Bản mới nhất (v{versions.length + 1})
+                    </button>
+                    {versions
+                      .slice()
+                      .reverse()
+                      .map((ver) => (
+                        <button
+                          key={ver.version}
+                          type="button"
+                          onClick={() => setSelectedVersion(ver.version)}
+                          className={cn(
+                            'cursor-pointer rounded-lg px-2.5 py-1 text-xs font-medium transition-colors',
+                            selectedVersion === ver.version
+                              ? 'bg-amber-600 text-white shadow-xs'
+                              : 'border border-border bg-card text-muted-foreground hover:text-foreground',
+                          )}
+                        >
+                          Bản cũ v{ver.version} (
+                          {new Date(ver.savedAt).toLocaleDateString('vi-VN')})
+                        </button>
+                      ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Stage Content */}
+              {displayType === LessonType.VIDEO && (
                 <SmartVideoPlayer
                   ref={videoHandleRef}
                   lessonId={lessonContent.id}
-                  playbackUrl={lessonContent.playbackUrl}
-                  initialPositionSec={lessonContent.progress.lastPositionSec}
+                  playbackUrl={displayPlaybackUrl}
+                  initialPositionSec={
+                    activeVersionSnapshot ? 0 : lessonContent.progress.lastPositionSec
+                  }
                   initialWatchedPercent={lessonContent.progress.watchedPercent}
+                  maxReachedSecInitial={
+                    activeVersionSnapshot ? 0 : (lessonContent.progress.maxReachedSec ?? 0)
+                  }
+                  videoDurationSec={
+                    activeVersionSnapshot
+                      ? activeVersionSnapshot.videoDurationSec
+                      : lessonContent.videoDurationSec
+                  }
                   minWatchPercent={lessonContent.minWatchPercent}
+                  progressionConfig={
+                    lessonContent.progressionConfig ?? room.course.progressionConfig
+                  }
                   isCompletedInitial={lessonContent.progress.isCompleted}
+                  isStaffPreview={room.isStaffPreview}
+                  readOnlyVersion={Boolean(activeVersionSnapshot)}
                   onProgressUpdated={(res) => {
                     if (res.justCompleted || res.certificate) {
                       refreshLearningState();
+                    }
+                  }}
+                  onVideoEnded={() => {
+                    if (
+                      !activeVersionSnapshot &&
+                      learningPrefs?.autoPlayNextLesson !== false &&
+                      lessonContent.navigation.nextLesson?.isUnlocked
+                    ) {
+                      notify.info('Đang chuyển sang bài học tiếp theo...');
+                      setActiveLessonId(lessonContent.navigation.nextLesson.id);
                     }
                   }}
                   onQuickNoteShortcut={(sec) => setQuickNoteTriggerSec(sec)}
                 />
               )}
 
-              {lessonContent.type === LessonType.ARTICLE && (
+              {displayType === LessonType.ARTICLE && (
                 <Card>
                   <CardContent className="space-y-6 p-6 sm:p-8">
                     <div className="text-sm leading-relaxed text-foreground/95 [&_blockquote]:border-l-4 [&_blockquote]:border-primary/40 [&_blockquote]:pl-4 [&_blockquote]:italic [&_code]:rounded [&_code]:bg-secondary [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-xs [&_h1]:mb-4 [&_h1]:text-2xl [&_h1]:font-extrabold [&_h2]:mb-3 [&_h2]:mt-6 [&_h2]:text-xl [&_h2]:font-bold [&_h3]:mb-2 [&_h3]:mt-4 [&_h3]:text-base [&_h3]:font-semibold [&_li]:ml-5 [&_li]:list-disc [&_p]:mb-3.5 [&_pre]:my-4 [&_pre]:overflow-x-auto [&_pre]:rounded-xl [&_pre]:bg-zinc-950 [&_pre]:p-4 [&_pre]:text-zinc-100">
                       <ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml>
-                        {lessonContent.articleMd || '_Chưa có nội dung bài đọc._'}
+                        {displayArticleMd || '_Chưa có nội dung bài đọc._'}
                       </ReactMarkdown>
                     </div>
 
-                    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-5">
-                      <span className="text-xs text-muted-foreground">
-                        {lessonContent.progress.isCompleted
-                          ? 'Bạn đã hoàn thành bài đọc này.'
-                          : 'Đọc xong nội dung trên và xác nhận hoàn thành để mở bài kế tiếp.'}
-                      </span>
-                      <Button
-                        disabled={
-                          lessonContent.progress.isCompleted || completeArticleMutation.isPending
-                        }
-                        onClick={() => completeArticleMutation.mutate(lessonContent.id)}
-                        className="gap-2"
-                      >
-                        {completeArticleMutation.isPending ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : (
-                          <CheckCircle2 className="h-4 w-4" />
-                        )}
-                        {lessonContent.progress.isCompleted
-                          ? 'Đã hoàn thành bài đọc'
-                          : 'Đánh dấu đã hoàn thành'}
-                      </Button>
-                    </div>
+                    {!activeVersionSnapshot && (
+                      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-5">
+                        <span className="text-xs text-muted-foreground">
+                          {lessonContent.progress.isCompleted
+                            ? 'Bạn đã hoàn thành bài đọc này.'
+                            : 'Đọc xong nội dung trên và xác nhận hoàn thành để mở bài kế tiếp.'}
+                        </span>
+                        <Button
+                          disabled={
+                            lessonContent.progress.isCompleted || completeArticleMutation.isPending
+                          }
+                          onClick={() => completeArticleMutation.mutate(lessonContent.id)}
+                          className="gap-2"
+                        >
+                          {completeArticleMutation.isPending ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <CheckCircle2 className="h-4 w-4" />
+                          )}
+                          {lessonContent.progress.isCompleted
+                            ? 'Đã hoàn thành bài đọc'
+                            : 'Đánh dấu đã hoàn thành'}
+                        </Button>
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
               )}
 
-              {lessonContent.type === LessonType.QUIZ && (
+              {displayType === LessonType.QUIZ && (
                 <QuizRunner
                   lessonId={lessonContent.id}
                   onPassed={() => refreshLearningState()}
@@ -363,7 +498,11 @@ function LearningRoomContent() {
                     const next = lessonContent.navigation.nextLesson;
                     if (!next) return;
                     if (!next.isUnlocked) {
-                      notify.info('Hoàn thành bài hiện tại để mở khóa bài kế tiếp nhé!');
+                      notify.info(
+                        progressionMode === 'SECTION_SEQUENTIAL'
+                          ? 'Hoàn thành toàn bộ bài trong chương hiện tại để mở khóa chương kế tiếp!'
+                          : 'Hoàn thành bài hiện tại để mở khóa bài kế tiếp nhé!',
+                      );
                       return;
                     }
                     setActiveLessonId(next.id);
@@ -410,6 +549,7 @@ function LearningRoomContent() {
               <h3 className="text-sm font-bold">Nội dung khóa học</h3>
               <p className="text-[11px] text-muted-foreground">
                 {room.sections.length} chương • {room.course.totalLessons} bài học
+                {progressionLabel && ` • ${progressionLabel}`}
               </p>
             </div>
 
@@ -417,6 +557,7 @@ function LearningRoomContent() {
               {room.sections.map((section, sIdx) => {
                 const isOpen = Boolean(expandedSections[section.id]);
                 const doneInSection = section.lessons.filter((l) => l.isCompleted).length;
+                const sectionLocked = section.isUnlocked === false;
 
                 return (
                   <div key={section.id}>
@@ -428,14 +569,24 @@ function LearningRoomContent() {
                           [section.id]: !prev[section.id],
                         }))
                       }
-                      className="flex w-full cursor-pointer items-center justify-between gap-2 bg-secondary/35 px-4 py-3 text-left transition-colors hover:bg-secondary/60"
+                      className={cn(
+                        'flex w-full cursor-pointer items-center justify-between gap-2 bg-secondary/35 px-4 py-3 text-left transition-colors hover:bg-secondary/60',
+                        sectionLocked && 'opacity-75',
+                      )}
                     >
                       <div className="min-w-0">
-                        <p className="truncate text-xs font-bold">
-                          Chương {sIdx + 1}: {section.title}
+                        <p className="flex items-center gap-1.5 truncate text-xs font-bold">
+                          {sectionLocked && (
+                            <Lock className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+                          )}
+                          <span className="truncate">
+                            Chương {sIdx + 1}: {section.title}
+                          </span>
                         </p>
                         <p className="font-mono text-[10px] text-muted-foreground">
-                          {doneInSection}/{section.lessons.length} bài hoàn thành
+                          {sectionLocked
+                            ? section.lockedMessage || 'Chưa mở khóa chương này'
+                            : `${doneInSection}/${section.lessons.length} bài hoàn thành`}
                         </p>
                       </div>
                       <ChevronDown
@@ -456,8 +607,11 @@ function LearningRoomContent() {
                               type="button"
                               onClick={() => {
                                 if (!lesson.isUnlocked) {
-                                  notify.info('Bài học này đang khóa theo lộ trình tuần tự', {
-                                    description: 'Hãy hoàn thành bài học liền trước để mở khóa nhé.',
+                                  notify.info('Bài học đang khóa theo điều kiện lộ trình', {
+                                    description:
+                                      lesson.lockedMessage ||
+                                      section.lockedMessage ||
+                                      'Hãy hoàn thành bài học liền trước để mở khóa nhé.',
                                   });
                                   return;
                                 }
@@ -495,7 +649,7 @@ function LearningRoomContent() {
                                 >
                                   {lesson.title}
                                 </p>
-                                <div className="mt-1 flex items-center gap-2 font-mono text-[10px] text-muted-foreground">
+                                <div className="mt-1 flex flex-wrap items-center gap-2 font-mono text-[10px] text-muted-foreground">
                                   <span>
                                     {lesson.type === LessonType.VIDEO
                                       ? formatDuration(lesson.videoDurationSec)
@@ -510,6 +664,11 @@ function LearningRoomContent() {
                                         • {lesson.watchedPercent}%
                                       </span>
                                     )}
+                                  {(lesson.versionCount ?? 0) > 0 && (
+                                    <span className="rounded bg-primary/15 px-1 text-[9px] font-semibold text-primary">
+                                      Đã cập nhật
+                                    </span>
+                                  )}
                                 </div>
                               </div>
                             </button>

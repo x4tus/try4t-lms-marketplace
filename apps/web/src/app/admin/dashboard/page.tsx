@@ -32,6 +32,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { confirmAction } from '@/components/ui/confirm-dialog';
+import { CourseThumbnail } from '@/components/ui/course-thumbnail';
 import { Dialog } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -153,12 +154,29 @@ function AdminDashboardContent() {
   const updateUserMutation = useMutation({
     mutationFn: ({ id, payload }: { id: string; payload: { role?: Role; isActive?: boolean } }) =>
       api.patch<AuthUser>(`/users/${id}`, payload),
+    onMutate: async ({ id, payload }) => {
+      const key = ['admin-users', userSearch];
+      await queryClient.cancelQueries({ queryKey: key });
+      const prev = queryClient.getQueryData<PaginatedResult<AuthUser>>(key);
+      if (prev) {
+        queryClient.setQueryData<PaginatedResult<AuthUser>>(key, {
+          ...prev,
+          items: prev.items.map((u) => (u.id === id ? { ...u, ...payload } : u)),
+        });
+      }
+      return { prev, key };
+    },
     onSuccess: () => {
       notify.success('Đã cập nhật trạng thái người dùng');
-      void queryClient.invalidateQueries({ queryKey: ['admin-users'] });
     },
-    onError: (err) => {
+    onError: (err, _vars, ctx) => {
+      if (ctx?.prev) {
+        queryClient.setQueryData(ctx.key, ctx.prev);
+      }
       notify.error(err instanceof ApiClientError ? err.message : 'Cập nhật thất bại');
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ['admin-users'] });
     },
   });
 
@@ -280,16 +298,12 @@ function AdminDashboardContent() {
                     className="flex flex-wrap items-center justify-between gap-4 py-3.5"
                   >
                     <div className="flex min-w-0 items-center gap-3.5">
-                      <div className="h-14 w-24 shrink-0 overflow-hidden rounded-lg border border-border bg-secondary">
-                        {course.thumbnailUrl && (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img
-                            src={course.thumbnailUrl}
-                            alt={course.title}
-                            className="h-full w-full object-cover"
-                          />
-                        )}
-                      </div>
+                      <CourseThumbnail
+                        src={course.thumbnailUrl}
+                        alt={course.title}
+                        compact
+                        className="h-14 w-24 shrink-0 rounded-lg border border-border"
+                      />
                       <div className="min-w-0">
                         <p className="truncate font-semibold">{course.title}</p>
                         <p className="text-xs text-muted-foreground">

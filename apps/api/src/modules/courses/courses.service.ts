@@ -24,6 +24,14 @@ import {
   type UpsertSectionInput,
 } from '@try4t/shared';
 import type { AuthenticatedUser } from '../../common/decorators/current-user.decorator';
+import {
+  normalizeProgressionConfig,
+  readCourseProgressionConfig,
+  readLessonVersions,
+  readLessonVersionsMap,
+  writeCourseProgressionConfig,
+  writeLessonVersions,
+} from '../../common/utils/course-progression';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import { StorageService } from '../../infrastructure/storage/storage.service';
 
@@ -72,6 +80,10 @@ export class CoursesService {
 
   async createCourse(user: AuthenticatedUser, input: CreateCourseInput) {
     const slug = await this.generateUniqueSlug(input.title);
+    const progressionConfig = normalizeProgressionConfig(
+      input.progressionConfig,
+      input.sequentialLockEnabled,
+    );
 
     const course = await this.prisma.course.create({
       data: {
@@ -84,7 +96,7 @@ export class CoursesService {
         level: input.level as PrismaCourseLevel,
         priceVnd: input.priceVnd,
         salePriceVnd: input.salePriceVnd ?? null,
-        sequentialLockEnabled: input.sequentialLockEnabled,
+        sequentialLockEnabled: progressionConfig.mode !== 'FREE',
         minWatchPercent: input.minWatchPercent,
         status: PrismaCourseStatus.DRAFT,
         sections: {
@@ -99,8 +111,11 @@ export class CoursesService {
       },
     });
 
+    await writeCourseProgressionConfig(this.prisma, course.id, progressionConfig);
+
     return {
       ...course,
+      progressionConfig,
       ratingAvg: Number(course.ratingAvg),
     };
   }
@@ -108,23 +123,25 @@ export class CoursesService {
   async getBuilderCourse(courseId: string, user: AuthenticatedUser) {
     await this.assertCourseOwnership(courseId, user);
 
-    const course = await this.prisma.course.findUnique({
-      where: { id: courseId },
-      include: {
-        category: { select: { id: true, name: true, slug: true } },
-        instructor: { select: { id: true, fullName: true, email: true } },
-        sections: {
-          orderBy: { sortOrder: 'asc' },
-          include: {
-            lessons: {
-              orderBy: { sortOrder: 'asc' },
-              include: {
-                quiz: {
-                  include: {
-                    questions: {
-                      orderBy: { sortOrder: 'asc' },
-                      include: {
-                        options: { orderBy: { sortOrder: 'asc' } },
+    const [course, enrolledStudentsCount, versionsMap] = await Promise.all([
+      this.prisma.course.findUnique({
+        where: { id: courseId },
+        include: {
+          category: { select: { id: true, name: true, slug: true } },
+          instructor: { select: { id: true, fullName: true, email: true } },
+          sections: {
+            orderBy: { sortOrder: 'asc' },
+            include: {
+              lessons: {
+                orderBy: { sortOrder: 'asc' },
+                include: {
+                  quiz: {
+                    include: {
+                      questions: {
+                        orderBy: { sortOrder: 'asc' },
+                        include: {
+                          options: { orderBy: { sortOrder: 'asc' } },
+                        },
                       },
                     },
                   },
@@ -132,35 +149,49 @@ export class CoursesService {
               },
             },
           },
-        },
-        reviewLogs: {
-          orderBy: { createdAt: 'desc' },
-          take: 10,
-          include: {
-            actor: { select: { id: true, fullName: true, role: true } },
+          reviewLogs: {
+            orderBy: { createdAt: 'desc' },
+            take: 10,
+            include: {
+              actor: { select: { id: true, fullName: true, role: true } },
+            },
           },
         },
-      },
-    });
+      }),
+      this.prisma.enrollment.count({ where: { courseId } }),
+      readLessonVersionsMap(this.prisma, courseId),
+    ]);
 
     if (!course) {
       throw new NotFoundException('Không tìm thấy khóa học');
     }
 
+    const progressionConfig = await readCourseProgressionConfig(
+      this.prisma,
+      course.id,
+      course.sequentialLockEnabled,
+    );
+
     const sectionsWithPlayback = await Promise.all(
       course.sections.map(async (section) => ({
         ...section,
         lessons: await Promise.all(
-          section.lessons.map(async (lesson) => ({
-            ...lesson,
-            playbackUrl: await this.storage.resolvePlaybackUrl(lesson.videoStorageKey),
-          })),
+          section.lessons.map(async (lesson) => {
+            const versions = versionsMap.get(lesson.id) ?? [];
+            return {
+              ...lesson,
+              versionCount: versions.length,
+              playbackUrl: await this.storage.resolvePlaybackUrl(lesson.videoStorageKey),
+            };
+          }),
         ),
       })),
     );
 
     return {
       ...course,
+      enrolledStudentsCount,
+      progressionConfig,
       ratingAvg: Number(course.ratingAvg),
       sections: sectionsWithPlayback,
     };
@@ -176,6 +207,27 @@ export class CoursesService {
       throw new BadRequestException('Giá khuyến mãi không được lớn hơn giá gốc');
     }
 
+    let nextProgressionConfig = await readCourseProgressionConfig(
+      this.prisma,
+      courseId,
+      existing.sequentialLockEnabled,
+    );
+    if (input.progressionConfig) {
+      nextProgressionConfig = normalizeProgressionConfig(
+        input.progressionConfig,
+        input.progressionConfig.mode !== 'FREE',
+      );
+    } else if (input.sequentialLockEnabled !== undefined) {
+      nextProgressionConfig = {
+        ...nextProgressionConfig,
+        mode: input.sequentialLockEnabled
+          ? nextProgressionConfig.mode === 'FREE'
+            ? 'LESSON_SEQUENTIAL'
+            : nextProgressionConfig.mode
+          : 'FREE',
+      };
+    }
+
     const updated = await this.prisma.course.update({
       where: { id: courseId },
       data: {
@@ -188,15 +240,17 @@ export class CoursesService {
         ...(input.descriptionMd !== undefined ? { descriptionMd: input.descriptionMd } : {}),
         ...(input.thumbnailUrl !== undefined ? { thumbnailUrl: input.thumbnailUrl } : {}),
         ...(input.promoVideoKey !== undefined ? { promoVideoKey: input.promoVideoKey } : {}),
-        ...(input.sequentialLockEnabled !== undefined
-          ? { sequentialLockEnabled: input.sequentialLockEnabled }
-          : {}),
+        sequentialLockEnabled: nextProgressionConfig.mode !== 'FREE',
         ...(input.minWatchPercent !== undefined ? { minWatchPercent: input.minWatchPercent } : {}),
       },
       include: {
         category: { select: { id: true, name: true, slug: true } },
       },
     });
+
+    if (input.progressionConfig !== undefined || input.sequentialLockEnabled !== undefined) {
+      await writeCourseProgressionConfig(this.prisma, courseId, nextProgressionConfig);
+    }
 
     // Clean up replaced thumbnail in background
     if (
@@ -209,7 +263,35 @@ export class CoursesService {
 
     return {
       ...updated,
+      progressionConfig: nextProgressionConfig,
       ratingAvg: Number(updated.ratingAvg),
+    };
+  }
+
+  async toggleCourseVisibility(courseId: string, user: AuthenticatedUser, archived: boolean) {
+    const existing = await this.assertCourseOwnership(courseId, user);
+    if (
+      existing.status !== PrismaCourseStatus.PUBLISHED &&
+      existing.status !== PrismaCourseStatus.ARCHIVED
+    ) {
+      throw new BadRequestException(
+        'Chỉ có thể ẩn hoặc mở bán lại các khóa học đã từng được xuất bản.',
+      );
+    }
+
+    const nextStatus = archived ? PrismaCourseStatus.ARCHIVED : PrismaCourseStatus.PUBLISHED;
+    const updated = await this.prisma.course.update({
+      where: { id: courseId },
+      data: { status: nextStatus },
+      select: { id: true, status: true, title: true },
+    });
+
+    return {
+      ...updated,
+      archived,
+      message: archived
+        ? 'Đã ẩn khóa học khỏi sàn. Học viên đã mua vẫn giữ quyền học trọn đời.'
+        : 'Đã mở bán lại khóa học công khai trên sàn Try4T.',
     };
   }
 
@@ -225,7 +307,12 @@ export class CoursesService {
         where: { id: courseId },
         data: { status: PrismaCourseStatus.ARCHIVED },
       });
-      return { archived: true, deleted: false };
+      return {
+        archived: true,
+        deleted: false,
+        enrolledCount: enrollmentCount,
+        message: `Khóa học đang có ${enrollmentCount} học viên sở hữu nên đã được ẩn khỏi sàn (ARCHIVED) thay vì xóa. Học viên đã mua vẫn học đầy đủ vĩnh viễn.`,
+      };
     }
 
     await this.prisma.course.delete({ where: { id: courseId } });
@@ -280,6 +367,15 @@ export class CoursesService {
 
   async deleteSection(courseId: string, sectionId: string, user: AuthenticatedUser) {
     await this.assertCourseOwnership(courseId, user);
+
+    const enrollmentCount = await this.prisma.enrollment.count({ where: { courseId } });
+    if (enrollmentCount > 0) {
+      throw new BadRequestException({
+        code: 'CANNOT_DELETE_ENROLLED_CONTENT',
+        message:
+          'Khóa học đã có học viên sở hữu nên không được xóa chương cũ. Bạn chỉ có thể thêm chương/bài mới hoặc cập nhật bài hiện có (hệ thống tự lưu song song bản cũ).',
+      });
+    }
 
     const section = await this.prisma.courseSection.findFirst({
       where: { id: sectionId, courseId },
@@ -362,9 +458,12 @@ export class CoursesService {
   ) {
     await this.assertCourseOwnership(courseId, user);
 
-    const existing = await this.prisma.lesson.findFirst({
-      where: { id: lessonId, courseId },
-    });
+    const [existing, enrollmentCount] = await Promise.all([
+      this.prisma.lesson.findFirst({
+        where: { id: lessonId, courseId },
+      }),
+      this.prisma.enrollment.count({ where: { courseId } }),
+    ]);
     if (!existing) throw new NotFoundException('Không tìm thấy bài học');
 
     const nextType = (input.type as PrismaLessonType | undefined) ?? existing.type;
@@ -372,6 +471,30 @@ export class CoursesService {
       input.videoStorageKey !== undefined ? input.videoStorageKey : existing.videoStorageKey;
     const videoKeyChanged =
       input.videoStorageKey !== undefined && input.videoStorageKey !== existing.videoStorageKey;
+
+    // Nếu khóa đã có học viên & nội dung bài học bị thay đổi -> tự động lưu bản cũ song song!
+    const contentChanged =
+      (input.title !== undefined && input.title !== existing.title) ||
+      videoKeyChanged ||
+      (input.articleMd !== undefined && input.articleMd !== existing.articleMd);
+
+    let savedVersionCount = 0;
+    const hasExistingContent = Boolean(existing.videoStorageKey || existing.articleMd);
+    if (enrollmentCount > 0 && contentChanged && hasExistingContent) {
+      const prevVersions = await readLessonVersions(this.prisma, lessonId);
+      const snapshot = {
+        version: prevVersions.length + 1,
+        savedAt: new Date().toISOString(),
+        title: existing.title,
+        type: existing.type,
+        videoStorageKey: existing.videoStorageKey,
+        videoDurationSec: existing.videoDurationSec,
+        articleMd: existing.articleMd,
+      };
+      const nextVersions = [...prevVersions, snapshot];
+      await writeLessonVersions(this.prisma, lessonId, nextVersions);
+      savedVersionCount = nextVersions.length;
+    }
 
     // Tự động đọc thời lượng thực tế từ tệp video nếu chưa có hoặc vừa đổi file/URL video
     let resolvedDurationSec = input.videoDurationSec;
@@ -413,7 +536,9 @@ export class CoursesService {
       },
     });
 
+    // CHỈ xóa video cũ trên cloud khi khóa CHƯA có học viên (đã có học viên thì giữ nguyên video cũ cho bản lịch sử!)
     if (
+      enrollmentCount === 0 &&
       input.videoStorageKey !== undefined &&
       existing.videoStorageKey &&
       existing.videoStorageKey !== input.videoStorageKey
@@ -425,12 +550,22 @@ export class CoursesService {
 
     return {
       ...updated,
+      versionCount: savedVersionCount,
       playbackUrl: await this.storage.resolvePlaybackUrl(updated.videoStorageKey),
     };
   }
 
   async deleteLesson(courseId: string, lessonId: string, user: AuthenticatedUser) {
     await this.assertCourseOwnership(courseId, user);
+
+    const enrollmentCount = await this.prisma.enrollment.count({ where: { courseId } });
+    if (enrollmentCount > 0) {
+      throw new BadRequestException({
+        code: 'CANNOT_DELETE_ENROLLED_CONTENT',
+        message:
+          'Khóa học đã có học viên sở hữu nên không được xóa bài học cũ. Bạn chỉ có thể thêm bài mới hoặc sửa bài hiện có (học viên xem được song song bản cũ & bản mới).',
+      });
+    }
 
     const existing = await this.prisma.lesson.findFirst({
       where: { id: lessonId, courseId },

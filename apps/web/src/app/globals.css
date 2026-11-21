@@ -85,6 +85,38 @@ html {
   scroll-behavior: smooth;
 }
 
+html[data-font-scale='sm'] {
+  font-size: 14.5px;
+}
+
+html[data-font-scale='md'] {
+  font-size: 16px;
+}
+
+html[data-font-scale='lg'] {
+  font-size: 17.5px;
+}
+
+html[data-density='compact'] {
+  --radius: 0.55rem;
+}
+
+html[data-density='spacious'] {
+  --radius: 1rem;
+}
+
+html[data-reduced-motion='true'] {
+  scroll-behavior: auto;
+}
+
+html[data-reduced-motion='true'] *,
+html[data-reduced-motion='true'] *::before,
+html[data-reduced-motion='true'] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+}
+
 body {
   background-color: var(--background);
   color: var(--foreground);

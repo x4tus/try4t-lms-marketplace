@@ -16,6 +16,7 @@ import type { AuthUser } from '@try4t/shared';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Dialog } from '@/components/ui/dialog';
+import { MarkdownPreview, RichTextEditor } from '@/components/ui/rich-text-editor';
 import { api, ApiClientError } from '@/lib/api-client';
 import { notify } from '@/lib/notify';
 
@@ -151,27 +152,32 @@ export function InstructorAppInspectModal({
         {/* Bio & Teaching plan */}
         <div className="space-y-3">
           <div className="rounded-xl border border-border p-3.5 text-xs">
-            <p className="font-semibold text-muted-foreground">Giới thiệu kinh nghiệm</p>
-            <p className="mt-1.5 whitespace-pre-wrap leading-relaxed">
-              {applicant.bio || 'Chưa có mô tả'}
-            </p>
+            <p className="mb-1.5 font-semibold text-muted-foreground">Giới thiệu kinh nghiệm</p>
+            <MarkdownPreview
+              content={applicant.bio || ''}
+              emptyText="Chưa có mô tả"
+              className="text-xs"
+            />
           </div>
           <div className="rounded-xl border border-border p-3.5 text-xs">
-            <p className="font-semibold text-muted-foreground">Kế hoạch khóa học dự kiến</p>
-            <p className="mt-1.5 whitespace-pre-wrap leading-relaxed">
-              {p?.teachingPlan || 'Chưa có kế hoạch'}
-            </p>
+            <p className="mb-1.5 font-semibold text-muted-foreground">Kế hoạch khóa học dự kiến</p>
+            <MarkdownPreview
+              content={p?.teachingPlan || ''}
+              emptyText="Chưa có kế hoạch"
+              className="text-xs"
+            />
           </div>
         </div>
 
         {/* Decision */}
         <div className="space-y-3 border-t border-border pt-4">
-          <textarea
-            rows={2}
+          <RichTextEditor
+            compact
+            rows={3}
+            minHeightClass="min-h-[80px]"
             value={note}
-            onChange={(e) => setNote(e.target.value)}
-            placeholder="Ghi chú duyệt hoặc lý do từ chối (bắt buộc ≥ 5 ký tự nếu từ chối)..."
-            className="flex w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            onChange={setNote}
+            placeholder="Ghi chú duyệt hoặc lý do cần bổ sung (bắt buộc ≥ 5 ký tự nếu từ chối)..."
           />
           <div className="flex flex-wrap justify-end gap-2">
             <Button variant="outline" onClick={onClose} disabled={decideMutation.isPending}>

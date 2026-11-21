@@ -116,8 +116,21 @@ export function applyThemePaletteToDom(
   for (const key of CUSTOM_CSS_VARS) {
     root.style.removeProperty(key);
   }
+  root.removeAttribute('data-density');
+  root.removeAttribute('data-font-scale');
+  root.removeAttribute('data-reduced-motion');
 
   if (!config) return;
+
+  if (config.density) {
+    root.setAttribute('data-density', config.density);
+  }
+  if (config.fontScale) {
+    root.setAttribute('data-font-scale', config.fontScale);
+  }
+  if (config.reducedMotion) {
+    root.setAttribute('data-reduced-motion', 'true');
+  }
 
   const activeBg = resolveActiveBackground(config, resolvedMode);
 

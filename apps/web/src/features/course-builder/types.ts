@@ -1,4 +1,10 @@
-import type { CourseLevel, CourseStatus, LessonType, QuizQuestionType } from '@try4t/shared';
+import type {
+  CourseLevel,
+  CourseProgressionConfig,
+  CourseStatus,
+  LessonType,
+  QuizQuestionType,
+} from '@try4t/shared';
 
 export interface CategoryOption {
   id: string;
@@ -60,6 +66,7 @@ export interface BuilderLesson {
   videoDurationSec: number;
   articleMd: string | null;
   resourcesJson: Array<{ name: string; url: string }>;
+  versionCount?: number;
   quiz?: BuilderQuiz | null;
 }
 
@@ -103,6 +110,8 @@ export interface BuilderCourse extends Omit<InstructorCourseSummary, 'latestRevi
   promoVideoKey: string | null;
   sequentialLockEnabled: boolean;
   minWatchPercent: number;
+  progressionConfig?: CourseProgressionConfig;
+  enrolledStudentsCount?: number;
   sections: BuilderSection[];
   reviewLogs: ReviewLogItem[];
 }

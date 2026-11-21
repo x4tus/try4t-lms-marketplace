@@ -4,13 +4,14 @@ import * as React from 'react';
 import { useRouter } from 'next/navigation';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Sparkles } from 'lucide-react';
+import { Loader2, ShieldCheck, Sparkles } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import type { z } from 'zod';
 import {
   CourseLevel,
   createCourseSchema,
   formatVnd,
+  type CourseProgressionMode,
   type CreateCourseInput,
 } from '@try4t/shared';
 import { Button } from '@/components/ui/button';
@@ -29,6 +30,10 @@ interface CreateCourseModalProps {
 export function CreateCourseModal({ open, onClose }: CreateCourseModalProps) {
   const router = useRouter();
   const queryClient = useQueryClient();
+
+  const [progressionMode, setProgressionMode] = React.useState<CourseProgressionMode>('FREE');
+  const [blockFastForward, setBlockFastForward] = React.useState(true);
+  const [maxSeekAheadPercent, setMaxSeekAheadPercent] = React.useState(5);
 
   const { data: categories } = useQuery({
     queryKey: ['public-categories'],
@@ -54,6 +59,12 @@ export function CreateCourseModal({ open, onClose }: CreateCourseModalProps) {
       const created = await api.post<{ id: string }>('/instructor/courses', {
         ...values,
         categoryId: values.categoryId || null,
+        sequentialLockEnabled: progressionMode !== 'FREE',
+        progressionConfig: {
+          mode: progressionMode,
+          blockFastForward,
+          maxSeekAheadPercent,
+        },
         salePriceVnd:
           values.salePriceVnd === undefined || Number.isNaN(values.salePriceVnd)
             ? null
@@ -64,6 +75,9 @@ export function CreateCourseModal({ open, onClose }: CreateCourseModalProps) {
         description: 'Đang mở Course Builder để bạn bắt đầu soạn giáo trình.',
       });
       form.reset();
+      setProgressionMode('FREE');
+      setBlockFastForward(true);
+      setMaxSeekAheadPercent(5);
       onClose();
       router.push(`/instructor/courses/${created.id}/builder`);
     } catch (err) {
@@ -192,19 +206,67 @@ export function CreateCourseModal({ open, onClose }: CreateCourseModalProps) {
           </div>
         </div>
 
-        <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-border bg-secondary/40 p-3">
-          <input
-            type="checkbox"
-            className="mt-1 h-4 w-4 accent-primary"
-            {...form.register('sequentialLockEnabled')}
-          />
-          <div>
-            <p className="text-sm font-medium">Bật chế độ mở khóa tuần tự (Sequential Drip Lock)</p>
-            <p className="text-xs text-muted-foreground">
-              Học viên phải xem ≥ 80% video hoặc vượt qua Quiz trước khi mở bài học tiếp theo.
-            </p>
+        {/* Progression Rules & Anti-Seek */}
+        <div className="space-y-3 rounded-xl border border-border bg-secondary/35 p-3.5">
+          <div className="flex items-center gap-1.5 text-xs font-semibold">
+            <ShieldCheck className="h-4 w-4 text-primary" />
+            Điều kiện mở khóa bài học &amp; Chống tua video
           </div>
-        </label>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="cc-prog-mode" className="text-xs">
+              Quy tắc mở bài tiếp theo
+            </Label>
+            <select
+              id="cc-prog-mode"
+              value={progressionMode}
+              onChange={(e) => setProgressionMode(e.target.value as CourseProgressionMode)}
+              className="flex h-9 w-full rounded-lg border border-input bg-card px-3 text-xs"
+            >
+              <option value="FREE">Học tự do (Mở tất cả chương &amp; bài học)</option>
+              <option value="LESSON_SEQUENTIAL">
+                Khóa tuần tự từng bài (Phải xong bài trước mới mở bài kế tiếp)
+              </option>
+              <option value="SECTION_SEQUENTIAL">
+                Khóa theo từng Chương (Hoàn thành hết Chương 1 mới mở Chương 2...)
+              </option>
+            </select>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-[1fr_130px] sm:items-center">
+            <label className="flex cursor-pointer items-start gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={blockFastForward}
+                onChange={(e) => setBlockFastForward(e.target.checked)}
+                className="mt-0.5 h-4 w-4 accent-primary"
+              />
+              <span>
+                <strong>Chặn tua nhanh vượt phần chưa xem</strong> ngay khi học viên kéo thanh thời
+                gian
+              </span>
+            </label>
+
+            {blockFastForward && (
+              <div className="space-y-1">
+                <Label htmlFor="cc-seek-pct" className="text-[11px] text-muted-foreground">
+                  Tua trước tối đa
+                </Label>
+                <select
+                  id="cc-seek-pct"
+                  value={maxSeekAheadPercent}
+                  onChange={(e) => setMaxSeekAheadPercent(Number(e.target.value))}
+                  className="flex h-8 w-full rounded-lg border border-input bg-card px-2 font-mono text-xs"
+                >
+                  <option value={0}>0% (Chặn tuyệt đối)</option>
+                  <option value={5}>+5% thời lượng</option>
+                  <option value={10}>+10% thời lượng</option>
+                  <option value={15}>+15% thời lượng</option>
+                </select>
+              </div>
+            )}
+          </div>
+        </div>
 
         <div className="flex justify-end gap-2 border-t border-border pt-4">
           <Button type="button" variant="outline" onClick={onClose}>

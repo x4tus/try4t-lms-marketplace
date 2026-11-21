@@ -3,18 +3,22 @@
 import * as React from 'react';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useQuery } from '@tanstack/react-query';
-import { Image as ImageIcon, Loader2, Save } from 'lucide-react';
+import { Crop, Image as ImageIcon, Loader2, Save, ShieldCheck } from 'lucide-react';
 import { useForm } from 'react-hook-form';
+import type { z } from 'zod';
 import {
   CourseLevel,
   updateCourseSchema,
+  type CourseProgressionMode,
   type UpdateCourseInput,
 } from '@try4t/shared';
 import { Button } from '@/components/ui/button';
 import { confirmAction } from '@/components/ui/confirm-dialog';
+import { CourseThumbnail } from '@/components/ui/course-thumbnail';
 import { Dialog } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { RichTextEditor } from '@/components/ui/rich-text-editor';
 import { api, ApiClientError } from '@/lib/api-client';
 import { notify } from '@/lib/notify';
 import { ThumbnailCropModal } from './thumbnail-crop-modal';
@@ -36,12 +40,22 @@ export function CourseSettingsModal({
   const [cropOpen, setCropOpen] = React.useState(false);
   const [thumbnailUrl, setThumbnailUrl] = React.useState<string | null>(course.thumbnailUrl);
 
+  const initialMode: CourseProgressionMode =
+    course.progressionConfig?.mode ??
+    (course.sequentialLockEnabled ? 'LESSON_SEQUENTIAL' : 'FREE');
+  const initialBlockSeek = course.progressionConfig?.blockFastForward ?? true;
+  const initialSeekPct = course.progressionConfig?.maxSeekAheadPercent ?? 5;
+
+  const [progressionMode, setProgressionMode] = React.useState<CourseProgressionMode>(initialMode);
+  const [blockFastForward, setBlockFastForward] = React.useState<boolean>(initialBlockSeek);
+  const [maxSeekAheadPercent, setMaxSeekAheadPercent] = React.useState<number>(initialSeekPct);
+
   const { data: categories } = useQuery({
     queryKey: ['public-categories'],
     queryFn: () => api.get<CategoryOption[]>('/categories'),
   });
 
-  const form = useForm<UpdateCourseInput>({
+  const form = useForm<z.input<typeof updateCourseSchema>, unknown, UpdateCourseInput>({
     resolver: zodResolver(updateCourseSchema),
     values: {
       title: course.title,
@@ -58,9 +72,21 @@ export function CourseSettingsModal({
 
   React.useEffect(() => {
     setThumbnailUrl(course.thumbnailUrl);
-  }, [course.thumbnailUrl, open]);
+    setProgressionMode(
+      course.progressionConfig?.mode ??
+        (course.sequentialLockEnabled ? 'LESSON_SEQUENTIAL' : 'FREE'),
+    );
+    setBlockFastForward(course.progressionConfig?.blockFastForward ?? true);
+    setMaxSeekAheadPercent(course.progressionConfig?.maxSeekAheadPercent ?? 5);
+  }, [course, open]);
 
-  const hasUnsaved = form.formState.isDirty || thumbnailUrl !== course.thumbnailUrl;
+  const progressionChanged =
+    progressionMode !== initialMode ||
+    blockFastForward !== initialBlockSeek ||
+    maxSeekAheadPercent !== initialSeekPct;
+
+  const hasUnsaved =
+    form.formState.isDirty || thumbnailUrl !== course.thumbnailUrl || progressionChanged;
 
   async function handleSafeClose() {
     if (hasUnsaved) {
@@ -81,6 +107,12 @@ export function CourseSettingsModal({
         ...values,
         categoryId: values.categoryId || null,
         thumbnailUrl: thumbnailUrl || null,
+        sequentialLockEnabled: progressionMode !== 'FREE',
+        progressionConfig: {
+          mode: progressionMode,
+          blockFastForward,
+          maxSeekAheadPercent,
+        },
         salePriceVnd:
           values.salePriceVnd === undefined ||
           values.salePriceVnd === null ||
@@ -102,31 +134,22 @@ export function CourseSettingsModal({
         open={open}
         onClose={() => void handleSafeClose()}
         title="Cài đặt khóa học & Ảnh bìa 16:9"
-        description="Thiết lập thông tin hiển thị, học phí và quy tắc mở khóa bài học."
+        description="Thiết lập thông tin hiển thị, học phí, quy tắc mở khóa chương/bài và chống tua nhanh video."
         maxWidthClass="max-w-2xl"
       >
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-5" noValidate>
-          {/* Thumbnail preview + Crop trigger */}
+          {/* Thumbnail preview + Crop / Re-crop trigger */}
           <div className="grid items-center gap-4 rounded-xl border border-border bg-secondary/30 p-4 sm:grid-cols-[200px_1fr]">
-            <div className="aspect-video overflow-hidden rounded-lg border border-border bg-muted">
-              {thumbnailUrl ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={thumbnailUrl}
-                  alt={course.title}
-                  className="h-full w-full object-cover"
-                />
-              ) : (
-                <div className="flex h-full flex-col items-center justify-center text-xs text-muted-foreground">
-                  <ImageIcon className="mb-1 h-5 w-5" />
-                  Chưa có ảnh bìa
-                </div>
-              )}
-            </div>
+            <CourseThumbnail
+              src={thumbnailUrl}
+              alt={course.title}
+              compact
+              className="rounded-lg border border-border"
+            />
             <div className="space-y-2">
               <p className="text-sm font-semibold">Ảnh bìa chuẩn 16:9 (1280×720)</p>
               <p className="text-xs text-muted-foreground">
-                Ảnh đẹp, rõ chữ giúp tăng tỷ lệ click từ trang chủ &amp; kết quả tìm kiếm.
+                Bạn có thể cắt/xoay lại ngay trên ảnh bìa cũ mà không cần tải file mới lên lại.
               </p>
               <Button
                 type="button"
@@ -134,8 +157,15 @@ export function CourseSettingsModal({
                 size="sm"
                 onClick={() => setCropOpen(true)}
               >
-                <ImageIcon className="h-3.5 w-3.5" />
-                {thumbnailUrl ? 'Đổi & Crop ảnh bìa' : 'Tải lên & Crop 16:9'}
+                {thumbnailUrl ? (
+                  <>
+                    <Crop className="h-3.5 w-3.5" /> Cắt lại / Đổi ảnh bìa
+                  </>
+                ) : (
+                  <>
+                    <ImageIcon className="h-3.5 w-3.5" /> Tải lên &amp; Crop 16:9
+                  </>
+                )}
               </Button>
             </div>
           </div>
@@ -221,41 +251,106 @@ export function CourseSettingsModal({
           </div>
 
           <div className="space-y-1.5">
-            <Label htmlFor="cs-desc">Mô tả chi tiết khóa học (Hỗ trợ Markdown)</Label>
-            <textarea
+            <Label htmlFor="cs-desc">Mô tả chi tiết khóa học</Label>
+            <RichTextEditor
               id="cs-desc"
-              rows={4}
-              className="flex w-full rounded-lg border border-input bg-card px-3.5 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              rows={5}
+              value={form.watch('descriptionMd') ?? ''}
+              onChange={(val) => form.setValue('descriptionMd', val, { shouldDirty: true })}
               placeholder="Bạn sẽ học được gì? Yêu cầu đầu vào? Dự án thực tế sau khóa học..."
-              {...form.register('descriptionMd')}
             />
           </div>
 
-          <div className="grid gap-3 rounded-xl border border-border bg-secondary/30 p-4 sm:grid-cols-[1fr_160px]">
-            <label className="flex cursor-pointer items-start gap-2.5">
-              <input
-                type="checkbox"
-                className="mt-1 h-4 w-4 accent-primary"
-                {...form.register('sequentialLockEnabled')}
-              />
-              <div>
-                <p className="text-sm font-medium">Mở khóa bài học tuần tự (Sequential Drip)</p>
-                <p className="text-xs text-muted-foreground">
-                  Chặn nhảy cóc: bắt buộc hoàn thành bài trước (Video ≥ ngưỡng % hoặc qua Quiz).
-                </p>
+          {/* Progression & Anti-Seek Policy */}
+          <div className="space-y-3.5 rounded-xl border border-border bg-secondary/30 p-4">
+            <div className="flex items-center gap-2 text-sm font-semibold">
+              <ShieldCheck className="h-4 w-4 text-primary" />
+              Quy tắc mở khóa tiến độ &amp; Chặn tua nhanh video
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-3">
+              {(
+                [
+                  {
+                    value: 'FREE',
+                    title: 'Học tự do',
+                    desc: 'Học viên mở tự do mọi chương và bài học.',
+                  },
+                  {
+                    value: 'LESSON_SEQUENTIAL',
+                    title: 'Tuần tự từng bài',
+                    desc: 'Phải xong bài trước mới mở khóa bài liền sau.',
+                  },
+                  {
+                    value: 'SECTION_SEQUENTIAL',
+                    title: 'Hoàn thành theo Chương',
+                    desc: 'Học hết bài trong Chương 1 mới mở Chương 2...',
+                  },
+                ] as const
+              ).map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => setProgressionMode(opt.value)}
+                  className={`cursor-pointer rounded-xl border p-3 text-left transition-all ${
+                    progressionMode === opt.value
+                      ? 'border-primary bg-primary/10 ring-1 ring-primary'
+                      : 'border-border bg-card hover:bg-secondary/50'
+                  }`}
+                >
+                  <p className="text-xs font-bold">{opt.title}</p>
+                  <p className="mt-1 text-[11px] leading-snug text-muted-foreground">{opt.desc}</p>
+                </button>
+              ))}
+            </div>
+
+            <div className="grid gap-3 border-t border-border/70 pt-3 sm:grid-cols-[1fr_150px_140px] sm:items-end">
+              <label className="flex cursor-pointer items-start gap-2.5 self-center">
+                <input
+                  type="checkbox"
+                  checked={blockFastForward}
+                  onChange={(e) => setBlockFastForward(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 accent-primary"
+                />
+                <div>
+                  <p className="text-xs font-semibold">Chặn tua nhanh tức thì (Anti-Seek)</p>
+                  <p className="text-[11px] text-muted-foreground">
+                    Kéo vượt phần chưa xem sẽ lập tức trả về mốc tối đa hợp lệ.
+                  </p>
+                </div>
+              </label>
+
+              <div className="space-y-1">
+                <Label htmlFor="cs-seek-pct" className="text-xs">
+                  Biên độ tua trước
+                </Label>
+                <select
+                  id="cs-seek-pct"
+                  disabled={!blockFastForward}
+                  value={maxSeekAheadPercent}
+                  onChange={(e) => setMaxSeekAheadPercent(Number(e.target.value))}
+                  className="flex h-10 w-full rounded-lg border border-input bg-card px-2.5 font-mono text-xs disabled:opacity-50"
+                >
+                  <option value={0}>0% (Chặn cứng)</option>
+                  <option value={5}>+5% thời lượng</option>
+                  <option value={10}>+10% thời lượng</option>
+                  <option value={15}>+15% thời lượng</option>
+                  <option value={25}>+25% thời lượng</option>
+                </select>
               </div>
-            </label>
-            <div className="space-y-1">
-              <Label htmlFor="cs-watch" className="text-xs">
-                Ngưỡng xem video (%)
-              </Label>
-              <Input
-                id="cs-watch"
-                type="number"
-                min={50}
-                max={100}
-                {...form.register('minWatchPercent', { valueAsNumber: true })}
-              />
+
+              <div className="space-y-1">
+                <Label htmlFor="cs-watch" className="text-xs">
+                  Ngưỡng hoàn thành (%)
+                </Label>
+                <Input
+                  id="cs-watch"
+                  type="number"
+                  min={50}
+                  max={100}
+                  {...form.register('minWatchPercent', { valueAsNumber: true })}
+                />
+              </div>
             </div>
           </div>
 

@@ -23,6 +23,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   AlertCircle,
+  Archive,
   ArrowLeft,
   CheckCircle2,
   Cloud,
@@ -31,11 +32,13 @@ import {
   FileText,
   GripVertical,
   HelpCircle,
+  History,
   Loader2,
   Pencil,
   Plus,
   Send,
   Settings,
+  ShieldCheck,
   Trash2,
   Video,
 } from 'lucide-react';
@@ -74,6 +77,7 @@ function isLessonReady(lesson: BuilderLesson): boolean {
 
 interface SortableLessonRowProps {
   lesson: BuilderLesson;
+  hasEnrolledStudents: boolean;
   allSections: Array<{ id: string; title: string; index: number }>;
   onEdit: (lesson: BuilderLesson) => void;
   onTogglePreview: (lesson: BuilderLesson) => void;
@@ -83,6 +87,7 @@ interface SortableLessonRowProps {
 
 function SortableLessonRow({
   lesson,
+  hasEnrolledStudents,
   allSections,
   onEdit,
   onTogglePreview,
@@ -136,6 +141,16 @@ function SortableLessonRow({
           <span className="font-mono text-xs text-muted-foreground">
             {formatDuration(lesson.videoDurationSec)}
           </span>
+        )}
+
+        {(lesson.versionCount ?? 0) > 0 && (
+          <Badge
+            variant="outline"
+            className="gap-1 font-mono text-[10px] text-primary"
+            title={`Có ${lesson.versionCount} phiên bản cũ được lưu song song`}
+          >
+            <History className="h-3 w-3" /> v{(lesson.versionCount ?? 0) + 1}
+          </Badge>
         )}
 
         <Badge variant={ready ? 'success' : 'warning'} className="text-[10px]">
@@ -195,8 +210,14 @@ function SortableLessonRow({
           type="button"
           size="icon"
           variant="ghost"
+          disabled={hasEnrolledStudents}
+          title={
+            hasEnrolledStudents
+              ? 'Không thể xóa bài học cũ khi khóa học đã có học viên (bạn có thể chỉnh sửa để giữ song song bản cũ & mới)'
+              : 'Xóa bài học'
+          }
           onClick={() => onDelete(lesson)}
-          className="h-7 w-7 text-muted-foreground hover:text-destructive"
+          className="h-7 w-7 text-muted-foreground hover:text-destructive disabled:opacity-35"
         >
           <Trash2 className="h-3.5 w-3.5" />
         </Button>
@@ -208,6 +229,7 @@ function SortableLessonRow({
 interface SortableSectionCardProps {
   section: BuilderSection;
   index: number;
+  hasEnrolledStudents: boolean;
   allSections: Array<{ id: string; title: string; index: number }>;
   onRenameSection: (sectionId: string, title: string) => void;
   onDeleteSection: (section: BuilderSection) => void;
@@ -222,6 +244,7 @@ interface SortableSectionCardProps {
 function SortableSectionCard({
   section,
   index,
+  hasEnrolledStudents,
   allSections,
   onRenameSection,
   onDeleteSection,
@@ -369,9 +392,14 @@ function SortableSectionCard({
             type="button"
             variant="ghost"
             size="icon"
-            className="h-7 w-7 text-muted-foreground hover:text-destructive"
+            disabled={hasEnrolledStudents}
+            className="h-7 w-7 text-muted-foreground hover:text-destructive disabled:opacity-35"
             onClick={() => onDeleteSection(section)}
-            title="Xóa chương"
+            title={
+              hasEnrolledStudents
+                ? 'Không thể xóa chương học khi đã có học viên đăng ký'
+                : 'Xóa chương'
+            }
           >
             <Trash2 className="h-3.5 w-3.5" />
           </Button>
@@ -393,6 +421,7 @@ function SortableSectionCard({
               <SortableLessonRow
                 key={lesson.id}
                 lesson={lesson}
+                hasEnrolledStudents={hasEnrolledStudents}
                 allSections={allSections}
                 onEdit={onEditLesson}
                 onTogglePreview={onTogglePreview}
@@ -567,12 +596,46 @@ function CourseBuilderContent() {
     }
   }
 
+  const toggleVisibilityMutation = useMutation({
+    mutationFn: (archived: boolean) =>
+      api.patch<{ status: CourseStatus; message: string }>(
+        `/instructor/courses/${courseId}/visibility`,
+        { archived },
+      ),
+    onMutate: async (archived) => {
+      await queryClient.cancelQueries({ queryKey: ['course-builder', courseId] });
+      const prev = queryClient.getQueryData<BuilderCourse>(['course-builder', courseId]);
+      if (prev) {
+        queryClient.setQueryData<BuilderCourse>(['course-builder', courseId], {
+          ...prev,
+          status: archived ? CourseStatus.ARCHIVED : CourseStatus.PUBLISHED,
+        });
+      }
+      return { prev };
+    },
+    onSuccess: (res) => {
+      notify.success(res.message);
+      void queryClient.invalidateQueries({ queryKey: ['instructor-courses'] });
+    },
+    onError: (err, _vars, ctx) => {
+      if (ctx?.prev) {
+        queryClient.setQueryData(['course-builder', courseId], ctx.prev);
+      }
+      notify.error(err instanceof ApiClientError ? err.message : 'Đổi trạng thái hiển thị thất bại');
+    },
+  });
+
   async function handleRenameSection(sectionId: string, title: string) {
+    const prevSections = sectionsState;
+    // Optimistic 0ms update
+    setSectionsState((prev) =>
+      prev.map((s) => (s.id === sectionId ? { ...s, title } : s)),
+    );
     try {
       await api.patch(`/instructor/courses/${courseId}/sections/${sectionId}`, { title });
       notify.success('Đã đổi tên chương');
-      refreshBuilder();
     } catch (err) {
+      setSectionsState(prevSections);
       notify.error(err instanceof ApiClientError ? err.message : 'Đổi tên thất bại');
     }
   }
@@ -586,11 +649,14 @@ function CourseBuilderContent() {
     });
     if (!ok) return;
 
+    const prevSections = sectionsState;
+    setSectionsState((prev) => prev.filter((s) => s.id !== section.id));
     try {
       await api.delete(`/instructor/courses/${courseId}/sections/${section.id}`);
       notify.success('Đã xóa chương học');
-      refreshBuilder();
+      void queryClient.invalidateQueries({ queryKey: ['instructor-courses'] });
     } catch (err) {
+      setSectionsState(prevSections);
       notify.error(err instanceof ApiClientError ? err.message : 'Xóa chương thất bại');
     }
   }
@@ -602,6 +668,11 @@ function CourseBuilderContent() {
         { title, type, isFreePreview: false },
       );
       notify.success('Đã thêm bài học mới');
+      setSectionsState((prev) =>
+        prev.map((sec) =>
+          sec.id === sectionId ? { ...sec, lessons: [...sec.lessons, created] } : sec,
+        ),
+      );
       refreshBuilder();
       setEditingLesson(created);
     } catch (err) {
@@ -610,17 +681,34 @@ function CourseBuilderContent() {
   }
 
   async function handleTogglePreview(lesson: BuilderLesson) {
+    const nextValue = !lesson.isFreePreview;
+    const prevSections = sectionsState;
+
+    // Optimistic 0ms flip on FE immediately
+    const optimisticSections = prevSections.map((sec) => ({
+      ...sec,
+      lessons: sec.lessons.map((l) =>
+        l.id === lesson.id ? { ...l, isFreePreview: nextValue } : l,
+      ),
+    }));
+    setSectionsState(optimisticSections);
+    queryClient.setQueryData<BuilderCourse>(['course-builder', courseId], (old) =>
+      old ? { ...old, sections: optimisticSections } : old,
+    );
+
     try {
       await api.patch(`/instructor/courses/${courseId}/lessons/${lesson.id}`, {
-        isFreePreview: !lesson.isFreePreview,
+        isFreePreview: nextValue,
       });
-      notify.success(
-        !lesson.isFreePreview ? 'Đã bật Học thử miễn phí' : 'Đã chuyển sang bài trả phí',
-        { description: lesson.title },
-      );
-      refreshBuilder();
     } catch (err) {
-      notify.error(err instanceof ApiClientError ? err.message : 'Cập nhật thất bại');
+      // Rollback FE cleanly if BE fails
+      setSectionsState(prevSections);
+      queryClient.setQueryData<BuilderCourse>(['course-builder', courseId], (old) =>
+        old ? { ...old, sections: prevSections } : old,
+      );
+      notify.error('Không thể đổi trạng thái Học thử', {
+        description: err instanceof ApiClientError ? err.message : 'Đã khôi phục lại trạng thái cũ.',
+      });
     }
   }
 
@@ -633,11 +721,19 @@ function CourseBuilderContent() {
     });
     if (!ok) return;
 
+    const prevSections = sectionsState;
+    setSectionsState((prev) =>
+      prev.map((sec) => ({
+        ...sec,
+        lessons: sec.lessons.filter((l) => l.id !== lesson.id),
+      })),
+    );
     try {
       await api.delete(`/instructor/courses/${courseId}/lessons/${lesson.id}`);
       notify.success('Đã xóa bài học');
-      refreshBuilder();
+      void queryClient.invalidateQueries({ queryKey: ['instructor-courses'] });
     } catch (err) {
+      setSectionsState(prevSections);
       notify.error(err instanceof ApiClientError ? err.message : 'Xóa thất bại');
     }
   }
@@ -654,10 +750,14 @@ function CourseBuilderContent() {
 
   const allLessons = sectionsState.flatMap((s) => s.lessons);
   const readyLessonsCount = allLessons.filter(isLessonReady).length;
+  const enrolledCount = course.enrolledStudentsCount ?? course.enrollmentCount ?? 0;
+  const hasEnrolledStudents = enrolledCount > 0;
   const canSubmit =
     (course.status === CourseStatus.DRAFT || course.status === CourseStatus.REJECTED) &&
     allLessons.length > 0 &&
     readyLessonsCount === allLessons.length;
+  const canToggleVisibility =
+    course.status === CourseStatus.PUBLISHED || course.status === CourseStatus.ARCHIVED;
 
   return (
     <div className="mx-auto max-w-6xl space-y-6 px-4 py-8 sm:px-6">
@@ -699,24 +799,71 @@ function CourseBuilderContent() {
             <Settings className="h-4 w-4" />
             Cài đặt &amp; Ảnh bìa 16:9
           </Button>
-          <Button
-            size="sm"
-            disabled={!canSubmit || submitReviewMutation.isPending}
-            onClick={() => submitReviewMutation.mutate()}
-          >
-            {submitReviewMutation.isPending ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Send className="h-4 w-4" />
-            )}
-            {course.status === CourseStatus.PENDING_REVIEW
-              ? 'Đang chờ Admin duyệt'
-              : course.status === CourseStatus.PUBLISHED
-                ? 'Đã xuất bản'
+          {canToggleVisibility && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={toggleVisibilityMutation.isPending}
+              onClick={async () => {
+                const isArchiving = course.status === CourseStatus.PUBLISHED;
+                const ok = await confirmAction({
+                  title: isArchiving
+                    ? 'Ẩn khóa học khỏi sàn bán mới?'
+                    : 'Mở bán lại khóa học này?',
+                  description: isArchiving
+                    ? 'Khách mới sẽ không thấy khóa học trong danh mục nữa. Toàn bộ học viên đã mua vẫn sở hữu vĩnh viễn và học bình thường.'
+                    : 'Khóa học sẽ hiển thị công khai trở lại trên Try4T.',
+                  confirmLabel: isArchiving ? 'Ẩn khóa học' : 'Mở bán lại',
+                });
+                if (ok) toggleVisibilityMutation.mutate(isArchiving);
+              }}
+            >
+              {course.status === CourseStatus.PUBLISHED ? (
+                <>
+                  <Archive className="h-4 w-4" /> Ẩn khỏi sàn
+                </>
+              ) : (
+                <>
+                  <Eye className="h-4 w-4" /> Mở bán lại
+                </>
+              )}
+            </Button>
+          )}
+          {!canToggleVisibility && (
+            <Button
+              size="sm"
+              disabled={!canSubmit || submitReviewMutation.isPending}
+              onClick={() => submitReviewMutation.mutate()}
+            >
+              {submitReviewMutation.isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Send className="h-4 w-4" />
+              )}
+              {course.status === CourseStatus.PENDING_REVIEW
+                ? 'Đang chờ Admin duyệt'
                 : 'Gửi duyệt xuất bản'}
-          </Button>
+            </Button>
+          )}
         </div>
       </div>
+
+      {/* Enrolled Student Protection Notice */}
+      {hasEnrolledStudents && (
+        <div className="flex items-start gap-3 rounded-xl border border-emerald-500/35 bg-emerald-500/10 p-4 text-xs text-emerald-700 dark:text-emerald-300">
+          <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0" />
+          <div className="space-y-0.5">
+            <p className="font-semibold">
+              Khóa học đang có {enrolledCount} học viên sở hữu trọn đời
+            </p>
+            <p className="opacity-90">
+              Để bảo vệ quyền lợi người mua: không thể xóa chương/bài học đã tồn tại. Bạn có thể{' '}
+              <strong>thêm bài mới</strong>, <strong>cập nhật bài cũ</strong> (hệ thống tự lưu
+              song song cả bản cũ và mới) hoặc bấm <strong>Ẩn khỏi sàn</strong> nếu ngừng bán mới.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Rejection Notice if REJECTED */}
       {course.status === CourseStatus.REJECTED && course.reviewLogs[0]?.note && (
@@ -762,6 +909,7 @@ function CourseBuilderContent() {
                     key={section.id}
                     section={section}
                     index={idx}
+                    hasEnrolledStudents={hasEnrolledStudents}
                     allSections={sectionsState.map((s, i) => ({
                       id: s.id,
                       title: s.title,
@@ -898,6 +1046,7 @@ function CourseBuilderContent() {
         onClose={() => setEditingLesson(null)}
         courseId={course.id}
         lesson={editingLesson}
+        hasEnrolledStudents={hasEnrolledStudents}
         onSaved={refreshBuilder}
       />
     </div>

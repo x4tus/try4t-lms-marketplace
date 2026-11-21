@@ -97,9 +97,46 @@ export const themeConfigSchema = z.object({
     .nullable()
     .optional(),
   mode: z.enum(['light', 'dark', 'system']).optional(),
+  density: z.enum(['compact', 'comfortable', 'spacious']).optional(),
+  fontScale: z.enum(['sm', 'md', 'lg']).optional(),
+  reducedMotion: z.boolean().optional(),
+  privacy: z
+    .object({
+      showPublicProfile: z.boolean().optional(),
+      showLearningActivity: z.boolean().optional(),
+      showCertificatesOnProfile: z.boolean().optional(),
+    })
+    .optional(),
+  learning: z
+    .object({
+      defaultPlaybackSpeed: z.coerce.number().min(0.75).max(2).optional(),
+      autoPlayNextLesson: z.boolean().optional(),
+      theaterModeDefault: z.boolean().optional(),
+    })
+    .optional(),
+  notifications: z
+    .object({
+      emailCourseUpdates: z.boolean().optional(),
+      emailQaReplies: z.boolean().optional(),
+      emailMarketing: z.boolean().optional(),
+    })
+    .optional(),
 });
 
 export type ThemeConfigInput = z.infer<typeof themeConfigSchema>;
+
+export const changePasswordSchema = z
+  .object({
+    currentPassword: z.string().optional().default(''),
+    newPassword: passwordRules,
+    confirmPassword: z.string().min(1, 'Vui lòng xác nhận mật khẩu mới'),
+  })
+  .refine((data) => data.newPassword === data.confirmPassword, {
+    message: 'Mật khẩu xác nhận không khớp',
+    path: ['confirmPassword'],
+  });
+
+export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
 
 export const updateProfileSchema = z.object({
   fullName: z

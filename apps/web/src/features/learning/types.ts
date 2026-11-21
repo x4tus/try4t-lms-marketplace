@@ -1,12 +1,19 @@
-import type { LessonType } from '@try4t/shared';
+import type {
+  CourseProgressionConfig,
+  CourseStatus,
+  LessonType,
+  LessonVersionSnapshot,
+} from '@try4t/shared';
 
 export interface LearningRoomData {
   course: {
     id: string;
     slug: string;
     title: string;
+    status?: CourseStatus;
     sequentialLockEnabled: boolean;
     minWatchPercent: number;
+    progressionConfig?: CourseProgressionConfig;
     totalLessons: number;
     totalDurationSec: number;
     instructor: {
@@ -24,12 +31,16 @@ export interface LearningRoomData {
     lastLessonId: string | null;
     enrolledAt: string;
     completedAt: string | null;
+    isCertifiedCompleted?: boolean;
+    bonusLessonsRemaining?: number;
   };
   initialLessonId: string | null;
   sections: Array<{
     id: string;
     title: string;
     sortOrder: number;
+    isUnlocked?: boolean;
+    lockedMessage?: string | null;
     lessons: Array<{
       id: string;
       title: string;
@@ -37,10 +48,12 @@ export interface LearningRoomData {
       sortOrder: number;
       videoDurationSec: number;
       isUnlocked: boolean;
+      lockedMessage?: string | null;
       isCompleted: boolean;
       lastPositionSec: number;
       uniqueWatchedSec: number;
       watchedPercent: number;
+      versionCount?: number;
       quizMeta: {
         passScorePercent: number;
         timeLimitSec: number | null;
@@ -64,6 +77,10 @@ export interface LearningRoomData {
   } | null;
 }
 
+export interface LessonVersionView extends LessonVersionSnapshot {
+  playbackUrl?: string | null;
+}
+
 export interface LessonContentData {
   id: string;
   courseId: string;
@@ -72,13 +89,16 @@ export interface LessonContentData {
   type: LessonType;
   videoDurationSec: number;
   minWatchPercent: number;
+  progressionConfig?: CourseProgressionConfig;
   playbackUrl: string | null;
   articleMd: string | null;
   resources: Array<{ title?: string; url?: string }>;
+  versions?: LessonVersionView[];
   progress: {
     lastPositionSec: number;
     uniqueWatchedSec: number;
     watchedPercent: number;
+    maxReachedSec?: number;
     isCompleted: boolean;
     completedAt: string | null;
   };
@@ -95,6 +115,7 @@ export interface HeartbeatResponse {
   lastPositionSec: number;
   uniqueWatchedSec: number;
   watchedPercent: number;
+  maxReachedSec?: number;
   minWatchPercent?: number;
   isCompleted: boolean;
   justCompleted?: boolean;

@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { ArrowRight, ShoppingBag, Trash2, X } from 'lucide-react';
 import { formatVnd } from '@try4t/shared';
 import { Button } from '@/components/ui/button';
+import { CourseThumbnail } from '@/components/ui/course-thumbnail';
 import { useAuthModalStore } from '@/features/auth/auth-modal.store';
 import { useAuthStore } from '@/features/auth/auth.store';
 import { notify } from '@/lib/notify';
@@ -104,16 +105,14 @@ export function CartDrawer() {
                     <Link
                       href={`/courses/${item.slug}`}
                       onClick={closeDrawer}
-                      className="h-16 w-24 shrink-0 overflow-hidden rounded-lg border border-border bg-muted"
+                      className="h-16 w-24 shrink-0 overflow-hidden rounded-lg border border-border"
                     >
-                      {item.thumbnailUrl && (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={item.thumbnailUrl}
-                          alt={item.title}
-                          className="h-full w-full object-cover"
-                        />
-                      )}
+                      <CourseThumbnail
+                        src={item.thumbnailUrl}
+                        alt={item.title}
+                        compact
+                        className="h-full w-full aspect-auto"
+                      />
                     </Link>
 
                     <div className="min-w-0 flex-1">

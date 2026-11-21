@@ -9,9 +9,13 @@ import {
   LayoutDashboard,
   LogOut,
   Menu,
+  Palette,
   Search,
+  Settings,
+  Shield,
   ShieldCheck,
   ShoppingCart,
+  Sliders,
   User as UserIcon,
   X,
 } from 'lucide-react';
@@ -25,7 +29,6 @@ import { useProfileModalStore } from '@/features/auth/profile-modal';
 import { useCartStore } from '@/features/cart/cart.store';
 import { cn } from '@/lib/cn';
 import { notify } from '@/lib/notify';
-import { ThemePalettePicker } from './theme-palette-picker';
 
 export function Navbar() {
   const pathname = usePathname();
@@ -152,7 +155,15 @@ export function Navbar() {
 
         {/* Right actions */}
         <div className="flex items-center gap-2">
-          <ThemePalettePicker />
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => openProfileModal(user ? 'appearance' : 'appearance')}
+            aria-label="Cài đặt tài khoản và giao diện"
+            title="Cài đặt & Giao diện"
+          >
+            <Settings className="h-4 w-4" />
+          </Button>
 
           <Button
             variant="ghost"
@@ -224,7 +235,40 @@ export function Navbar() {
                       className="flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm hover:bg-secondary"
                     >
                       <UserIcon className="h-4 w-4 text-muted-foreground" />
-                      Hồ sơ cá nhân
+                      Hồ sơ &amp; Cài đặt
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMenuOpen(false);
+                        openProfileModal('appearance');
+                      }}
+                      className="flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm hover:bg-secondary"
+                    >
+                      <Palette className="h-4 w-4 text-muted-foreground" />
+                      Giao diện &amp; Hiển thị
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMenuOpen(false);
+                        openProfileModal('privacy');
+                      }}
+                      className="flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm hover:bg-secondary"
+                    >
+                      <Sliders className="h-4 w-4 text-muted-foreground" />
+                      Riêng tư &amp; Học tập
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMenuOpen(false);
+                        openProfileModal('security');
+                      }}
+                      className="flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm hover:bg-secondary"
+                    >
+                      <Shield className="h-4 w-4 text-muted-foreground" />
+                      Bảo mật tài khoản
                     </button>
                     {(user.role === Role.INSTRUCTOR || user.role === Role.ADMIN) && (
                       <Link

@@ -32,6 +32,25 @@ function detectCurrentMode(): 'light' | 'dark' {
   return document.documentElement.classList.contains('dark') ? 'dark' : 'light';
 }
 
+function mergeThemeConfig(current: ThemeConfig, next: Partial<ThemeConfig>): ThemeConfig {
+  return {
+    ...current,
+    ...next,
+    privacy:
+      next.privacy !== undefined
+        ? { ...(current.privacy ?? {}), ...next.privacy }
+        : current.privacy,
+    learning:
+      next.learning !== undefined
+        ? { ...(current.learning ?? {}), ...next.learning }
+        : current.learning,
+    notifications:
+      next.notifications !== undefined
+        ? { ...(current.notifications ?? {}), ...next.notifications }
+        : current.notifications,
+  };
+}
+
 interface ThemePaletteState {
   palette: ThemeConfig;
   isSaving: boolean;
@@ -47,12 +66,14 @@ interface ThemePaletteState {
       resolvedMode?: 'light' | 'dark';
       persistToAccount?: boolean;
       onUserUpdated?: (user: AuthUser) => void;
+      immediate?: boolean;
     },
   ) => Promise<void>;
   resetPalette: (options?: {
     resolvedMode?: 'light' | 'dark';
     persistToAccount?: boolean;
     onUserUpdated?: (user: AuthUser) => void;
+    appearanceOnly?: boolean;
   }) => Promise<void>;
 }
 
@@ -75,7 +96,13 @@ export const useThemePaletteStore = create<ThemePaletteState>((set, get) => ({
         themeConfig.backgroundColor ||
         themeConfig.lightBackground ||
         themeConfig.darkBackground ||
-        themeConfig.mode);
+        themeConfig.mode ||
+        themeConfig.density ||
+        themeConfig.fontScale ||
+        themeConfig.reducedMotion !== undefined ||
+        themeConfig.privacy ||
+        themeConfig.learning ||
+        themeConfig.notifications);
     const resolved: ThemeConfig = hasConfig ? themeConfig : {};
     applyThemePaletteToDom(resolved, resolvedMode ?? detectCurrentMode());
     set({ palette: resolved });
@@ -86,10 +113,7 @@ export const useThemePaletteStore = create<ThemePaletteState>((set, get) => ({
   },
 
   setPalette: async (next, options) => {
-    const merged: ThemeConfig = {
-      ...get().palette,
-      ...next,
-    };
+    const merged = mergeThemeConfig(get().palette, next);
     if (!options?.persistToAccount) {
       writeLocalPalette(merged);
     }
@@ -99,7 +123,7 @@ export const useThemePaletteStore = create<ThemePaletteState>((set, get) => ({
     if (options?.persistToAccount) {
       if (saveTimer) clearTimeout(saveTimer);
       set({ isSaving: true });
-      saveTimer = setTimeout(async () => {
+      const persist = async () => {
         try {
           const updatedUser = await api.patch<AuthUser>('/users/me', {
             themeConfig: merged,
@@ -110,30 +134,55 @@ export const useThemePaletteStore = create<ThemePaletteState>((set, get) => ({
         } finally {
           set({ isSaving: false });
         }
-      }, 400);
+      };
+
+      if (options.immediate) {
+        await persist();
+      } else {
+        saveTimer = setTimeout(() => {
+          void persist();
+        }, 350);
+      }
     }
   },
 
   resetPalette: async (options) => {
-    const empty: ThemeConfig = {
-      accentColor: null,
-      backgroundColor: null,
-      lightBackground: null,
-      darkBackground: null,
-      mode: 'system',
-    };
+    const prev = get().palette;
+    const nextConfig: ThemeConfig = options?.appearanceOnly
+      ? {
+          ...prev,
+          accentColor: null,
+          backgroundColor: null,
+          lightBackground: null,
+          darkBackground: null,
+          mode: 'system',
+          density: 'comfortable',
+          fontScale: 'md',
+          reducedMotion: false,
+        }
+      : {
+          accentColor: null,
+          backgroundColor: null,
+          lightBackground: null,
+          darkBackground: null,
+          mode: 'system',
+          density: 'comfortable',
+          fontScale: 'md',
+          reducedMotion: false,
+        };
+
     if (!options?.persistToAccount) {
-      writeLocalPalette(empty);
+      writeLocalPalette(nextConfig);
     }
-    applyThemePaletteToDom(null, options?.resolvedMode ?? detectCurrentMode());
-    set({ palette: empty });
+    applyThemePaletteToDom(nextConfig, options?.resolvedMode ?? detectCurrentMode());
+    set({ palette: nextConfig });
 
     if (options?.persistToAccount) {
       if (saveTimer) clearTimeout(saveTimer);
       set({ isSaving: true });
       try {
         const updatedUser = await api.patch<AuthUser>('/users/me', {
-          themeConfig: null,
+          themeConfig: options?.appearanceOnly ? nextConfig : null,
         });
         options.onUserUpdated?.(updatedUser);
       } catch {

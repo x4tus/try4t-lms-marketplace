@@ -4,6 +4,7 @@ import * as React from 'react';
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import {
+  Archive,
   Award,
   BookOpen,
   CheckCircle2,
@@ -14,11 +15,13 @@ import {
   Play,
   QrCode,
   Receipt,
+  Sparkles,
 } from 'lucide-react';
-import { formatDuration, formatVnd, OrderStatus } from '@try4t/shared';
+import { CourseStatus, formatDuration, formatVnd, OrderStatus } from '@try4t/shared';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { CourseThumbnail } from '@/components/ui/course-thumbnail';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useAuthStore } from '@/features/auth/auth.store';
 import { RoleGuard } from '@/features/auth/role-guard';
@@ -33,11 +36,14 @@ interface EnrolledCourseItem {
   completedLessonsCount: number;
   enrolledAt: string;
   completedAt: string | null;
+  isCertifiedCompleted?: boolean;
+  bonusLessonsRemaining?: number;
   lastLesson: { id: string; title: string; type: string } | null;
   course: {
     id: string;
     slug: string;
     title: string;
+    status?: CourseStatus;
     thumbnailUrl: string | null;
     totalLessons: number;
     totalDurationSec: number;
@@ -247,34 +253,37 @@ function MyCoursesContent() {
             <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-3">
               {enrollments.map((enr) => (
                 <Card key={enr.id} className="flex flex-col overflow-hidden">
-                  <div className="relative aspect-video w-full bg-secondary">
-                    {enr.course.thumbnailUrl && (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={enr.course.thumbnailUrl}
-                        alt={enr.course.title}
-                        className="h-full w-full object-cover"
-                      />
+                  <CourseThumbnail src={enr.course.thumbnailUrl} alt={enr.course.title}>
+                    {enr.course.status === CourseStatus.ARCHIVED && (
+                      <Badge
+                        variant="outline"
+                        className="absolute left-3 top-3 gap-1 bg-background/85 text-[10px] backdrop-blur-xs"
+                      >
+                        <Archive className="h-3 w-3 text-amber-500" /> Sở hữu trọn đời
+                      </Badge>
                     )}
                     {enr.certificate && (
                       <Badge variant="success" className="absolute right-3 top-3 gap-1 shadow-md">
                         <Award className="h-3 w-3" /> Đã cấp chứng chỉ
                       </Badge>
                     )}
-                  </div>
+                  </CourseThumbnail>
 
                   <CardHeader className="flex-1 pb-3">
-                    {enr.course.category && (
-                      <span className="text-[11px] font-medium text-primary">
-                        {enr.course.category.name}
-                      </span>
-                    )}
-                    <CardTitle className="line-clamp-2 text-base leading-snug">
+                    <span className="min-h-[1rem] text-[11px] font-medium text-primary">
+                      {enr.course.category?.name ?? 'Khóa học Try4T'}
+                    </span>
+                    <CardTitle className="line-clamp-2 min-h-[2.75rem] text-base leading-snug">
                       {enr.course.title}
                     </CardTitle>
                     <CardDescription className="text-xs">
                       GV: {enr.course.instructor.fullName} • {formatDuration(enr.course.totalDurationSec)}
                     </CardDescription>
+                    {enr.isCertifiedCompleted && (enr.bonusLessonsRemaining ?? 0) > 0 && (
+                      <div className="mt-1.5 inline-flex w-fit items-center gap-1 rounded-md bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
+                        <Sparkles className="h-3 w-3" /> +{enr.bonusLessonsRemaining} bài bổ sung mới
+                      </div>
+                    )}
                   </CardHeader>
 
                   <CardContent className="space-y-4 pt-0">

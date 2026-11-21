@@ -7,6 +7,7 @@ import {
 import { LessonType as PrismaLessonType, Prisma } from '@prisma/client';
 import {
   Role,
+  type CourseProgressionConfig,
   type CreateAnswerInput,
   type CreateNoteInput,
   type CreateQuestionInput,
@@ -14,6 +15,11 @@ import {
   type VideoHeartbeatInput,
 } from '@try4t/shared';
 import type { AuthenticatedUser } from '../../common/decorators/current-user.decorator';
+import {
+  readCourseProgressionConfig,
+  readLessonVersions,
+  readLessonVersionsMap,
+} from '../../common/utils/course-progression';
 import {
   calcUniqueWatchedSeconds,
   mergeWatchIntervals,
@@ -32,8 +38,17 @@ export class LearningService {
     private readonly certificatesService: CertificatesService,
   ) {}
 
+  private computeMaxReachedSec(rawRanges: unknown, lastPositionSec: number): number {
+    const ranges = parseWatchRanges(rawRanges);
+    let maxEnd = Math.max(0, lastPositionSec);
+    for (const [, end] of ranges) {
+      if (end > maxEnd) maxEnd = Math.round(end);
+    }
+    return maxEnd;
+  }
+
   // ============================================================================
-  // ACCESS & SEQUENTIAL DRIP LOCK ENGINE
+  // ACCESS & CUSTOM PROGRESSION ENGINE (FREE / LESSON_SEQUENTIAL / SECTION_SEQUENTIAL)
   // ============================================================================
 
   async resolveCourseAccess(user: AuthenticatedUser, courseId: string) {
@@ -43,6 +58,7 @@ export class LearningService {
         id: true,
         slug: true,
         title: true,
+        status: true,
         instructorId: true,
         sequentialLockEnabled: true,
         minWatchPercent: true,
@@ -58,9 +74,15 @@ export class LearningService {
 
     const isStaffPreview = course.instructorId === user.id || user.role === Role.ADMIN;
 
-    const enrollment = await this.prisma.enrollment.findUnique({
-      where: { userId_courseId: { userId: user.id, courseId: course.id } },
-    });
+    const [enrollment, certificate, progressionConfig] = await Promise.all([
+      this.prisma.enrollment.findUnique({
+        where: { userId_courseId: { userId: user.id, courseId: course.id } },
+      }),
+      this.prisma.certificate.findUnique({
+        where: { userId_courseId: { userId: user.id, courseId: course.id } },
+      }),
+      readCourseProgressionConfig(this.prisma, course.id, course.sequentialLockEnabled),
+    ]);
 
     if (!enrollment && !isStaffPreview) {
       throw new ForbiddenException({
@@ -69,16 +91,20 @@ export class LearningService {
       });
     }
 
-    return { course, enrollment, isStaffPreview };
+    // Học viên đã hoàn thành 100% hoặc đã nhận chứng chỉ -> giữ vĩnh viễn quyền đã hoàn thành!
+    const isGraduate = Boolean(enrollment?.completedAt || certificate);
+
+    return { course, enrollment, certificate, isStaffPreview, isGraduate, progressionConfig };
   }
 
   private async buildLessonOrderAndLocks(
     courseId: string,
     userId: string,
-    sequentialLockEnabled: boolean,
+    progressionConfig: CourseProgressionConfig,
     isStaffPreview: boolean,
+    isGraduate: boolean,
   ) {
-    const [sections, progressRows] = await Promise.all([
+    const [sections, progressRows, versionsMap] = await Promise.all([
       this.prisma.courseSection.findMany({
         where: { courseId },
         orderBy: { sortOrder: 'asc' },
@@ -111,14 +137,32 @@ export class LearningService {
       this.prisma.lessonProgress.findMany({
         where: { userId, courseId },
       }),
+      readLessonVersionsMap(this.prisma, courseId),
     ]);
 
     const progressMap = new Map(progressRows.map((p) => [p.lessonId, p]));
-    const flatLessons = sections.flatMap((sec) =>
-      sec.lessons.map((l) => ({ ...l, sectionTitle: sec.title })),
+    const flatLessons = sections.flatMap((sec, sIdx) =>
+      sec.lessons.map((l) => ({ ...l, sectionTitle: sec.title, sectionIndex: sIdx })),
     );
 
     const unlockedSet = new Set<string>();
+    const lockedReasonMap = new Map<
+      string,
+      {
+        message: string;
+        requiredLessonId: string | null;
+        requiredLessonTitle: string | null;
+        requiredSectionTitle?: string | null;
+      }
+    >();
+    const sectionLockMap = new Map<
+      string,
+      {
+        isUnlocked: boolean;
+        lockedMessage: string | null;
+        remainingPrevCount: number;
+      }
+    >();
     const prevLessonMap = new Map<string, { id: string; title: string } | null>();
     const nextLessonMap = new Map<string, { id: string; title: string } | null>();
 
@@ -126,26 +170,100 @@ export class LearningService {
       const curr = flatLessons[i]!;
       const prev = i > 0 ? flatLessons[i - 1]! : null;
       const next = i < flatLessons.length - 1 ? flatLessons[i + 1]! : null;
-
       prevLessonMap.set(curr.id, prev ? { id: prev.id, title: prev.title } : null);
       nextLessonMap.set(curr.id, next ? { id: next.id, title: next.title } : null);
+    }
 
-      const currProgress = progressMap.get(curr.id);
-      const prevCompleted = prev ? Boolean(progressMap.get(prev.id)?.isCompleted) : true;
+    const bypassLock = isStaffPreview || isGraduate || progressionConfig.mode === 'FREE';
 
-      const isUnlocked =
-        !sequentialLockEnabled ||
-        isStaffPreview ||
-        i === 0 ||
-        Boolean(currProgress?.isCompleted) ||
-        prevCompleted;
+    if (progressionConfig.mode === 'SECTION_SEQUENTIAL' && !bypassLock) {
+      // Quy tắc theo Chương: Phải hoàn thành TẤT CẢ bài học trong chương trước mới mở khóa chương kế tiếp
+      let allPrevSectionsComplete = true;
+      let blockingSectionTitle: string | null = null;
+      let blockingFirstIncomplete: { id: string; title: string } | null = null;
+      let blockingRemaining = 0;
 
-      if (isUnlocked) {
-        unlockedSet.add(curr.id);
+      for (let sIdx = 0; sIdx < sections.length; sIdx++) {
+        const sec = sections[sIdx]!;
+        const sectionUnlocked = sIdx === 0 || allPrevSectionsComplete;
+
+        sectionLockMap.set(sec.id, {
+          isUnlocked: sectionUnlocked,
+          lockedMessage: sectionUnlocked
+            ? null
+            : `Hoàn thành hết "${blockingSectionTitle}" (còn ${blockingRemaining} bài) để mở khóa chương này.`,
+          remainingPrevCount: sectionUnlocked ? 0 : blockingRemaining,
+        });
+
+        for (const les of sec.lessons) {
+          const alreadyDone = Boolean(progressMap.get(les.id)?.isCompleted);
+          if (sectionUnlocked || alreadyDone) {
+            unlockedSet.add(les.id);
+          } else {
+            lockedReasonMap.set(les.id, {
+              message: `Khóa học yêu cầu hoàn thành toàn bộ "${blockingSectionTitle}" (còn ${blockingRemaining} bài) trước khi học sang "${sec.title}".`,
+              requiredLessonId: blockingFirstIncomplete?.id ?? null,
+              requiredLessonTitle: blockingFirstIncomplete?.title ?? null,
+              requiredSectionTitle: blockingSectionTitle,
+            });
+          }
+        }
+
+        // Kiểm tra xem chương hiện tại đã hoàn thành 100% chưa để quyết định chương tiếp theo
+        const incompleteInCurrent = sec.lessons.filter((l) => !progressMap.get(l.id)?.isCompleted);
+        if (incompleteInCurrent.length > 0) {
+          if (allPrevSectionsComplete) {
+            allPrevSectionsComplete = false;
+            blockingSectionTitle = sec.title;
+            blockingFirstIncomplete = {
+              id: incompleteInCurrent[0]!.id,
+              title: incompleteInCurrent[0]!.title,
+            };
+            blockingRemaining = incompleteInCurrent.length;
+          }
+        }
+      }
+    } else {
+      // FREE hoặc LESSON_SEQUENTIAL
+      for (const sec of sections) {
+        sectionLockMap.set(sec.id, {
+          isUnlocked: true,
+          lockedMessage: null,
+          remainingPrevCount: 0,
+        });
+      }
+
+      for (let i = 0; i < flatLessons.length; i++) {
+        const curr = flatLessons[i]!;
+        const prev = i > 0 ? flatLessons[i - 1]! : null;
+        const currProgress = progressMap.get(curr.id);
+        const prevCompleted = prev ? Boolean(progressMap.get(prev.id)?.isCompleted) : true;
+
+        const isUnlocked = bypassLock || i === 0 || Boolean(currProgress?.isCompleted) || prevCompleted;
+        if (isUnlocked) {
+          unlockedSet.add(curr.id);
+        } else if (prev) {
+          lockedReasonMap.set(curr.id, {
+            message: `Bạn cần hoàn thành bài "${prev.title}" trước khi mở khóa bài học này.`,
+            requiredLessonId: prev.id,
+            requiredLessonTitle: prev.title,
+            requiredSectionTitle: null,
+          });
+        }
       }
     }
 
-    return { sections, flatLessons, progressMap, unlockedSet, prevLessonMap, nextLessonMap };
+    return {
+      sections,
+      flatLessons,
+      progressMap,
+      versionsMap,
+      unlockedSet,
+      lockedReasonMap,
+      sectionLockMap,
+      prevLessonMap,
+      nextLessonMap,
+    };
   }
 
   async assertLessonAccessAndUnlock(user: AuthenticatedUser, lessonId: string) {
@@ -169,46 +287,57 @@ export class LearningService {
       throw new NotFoundException('Không tìm thấy bài học.');
     }
 
-    const { course, enrollment, isStaffPreview } = await this.resolveCourseAccess(
-      user,
-      lesson.courseId,
-    );
+    const { course, enrollment, certificate, isStaffPreview, isGraduate, progressionConfig } =
+      await this.resolveCourseAccess(user, lesson.courseId);
 
     const structure = await this.buildLessonOrderAndLocks(
       course.id,
       user.id,
-      course.sequentialLockEnabled,
+      progressionConfig,
       isStaffPreview,
+      isGraduate,
     );
 
     if (!structure.unlockedSet.has(lesson.id)) {
+      const reason = structure.lockedReasonMap.get(lesson.id);
       const prev = structure.prevLessonMap.get(lesson.id);
       throw new ForbiddenException({
         code: 'LESSON_LOCKED',
-        message: prev
-          ? `Khóa học đang bật học tuần tự. Bạn cần hoàn thành bài "${prev.title}" trước khi mở bài này.`
-          : 'Bài học này đang bị khóa tuần tự. Vui lòng hoàn thành bài học trước đó.',
-        previousLessonId: prev?.id ?? null,
-        previousLessonTitle: prev?.title ?? null,
+        message:
+          reason?.message ||
+          (prev
+            ? `Khóa học đang bật khóa lộ trình. Bạn cần hoàn thành bài "${prev.title}" trước khi mở bài này.`
+            : 'Bài học này đang bị khóa. Vui lòng hoàn thành các bài học trước đó.'),
+        previousLessonId: reason?.requiredLessonId ?? prev?.id ?? null,
+        previousLessonTitle: reason?.requiredLessonTitle ?? prev?.title ?? null,
       });
     }
 
-    return { lesson, course, enrollment, isStaffPreview, structure };
+    return { lesson, course, enrollment, certificate, isStaffPreview, isGraduate, progressionConfig, structure };
   }
 
   /**
    * Tính lại % tiến độ khóa học và tự động cấp chứng chỉ khi đạt 100%.
+   * ĐẶC BIỆT: Nếu học viên ĐÃ hoàn thành 100% / đã nhận chứng chỉ trước đó,
+   * việc giảng viên thêm bài mới KHÔNG BAO GIỜ hạ trạng thái hoàn thành hoặc chứng chỉ!
    */
   async recalculateEnrollmentProgress(userId: string, courseId: string) {
-    const enrollment = await this.prisma.enrollment.findUnique({
-      where: { userId_courseId: { userId, courseId } },
-    });
+    const [enrollment, existingCert] = await Promise.all([
+      this.prisma.enrollment.findUnique({
+        where: { userId_courseId: { userId, courseId } },
+      }),
+      this.prisma.certificate.findUnique({
+        where: { userId_courseId: { userId, courseId } },
+      }),
+    ]);
 
     if (!enrollment) {
       return {
         progressPercent: 0,
         completedLessonsCount: 0,
         totalLessons: 0,
+        isCertifiedCompleted: false,
+        bonusLessonsRemaining: 0,
         certificate: null,
       };
     }
@@ -225,29 +354,46 @@ export class LearningService {
     ]);
 
     const safeCompleted = Math.min(completedLessonsCount, totalLessons);
-    const progressPercent =
+    const rawPercent =
       totalLessons > 0
         ? Math.min(100, Number(((safeCompleted / totalLessons) * 100).toFixed(2)))
         : 0;
+
+    // Bảo vệ vĩnh viễn trạng thái đã hoàn thành & chứng chỉ khi giảng viên thêm bài bổ sung sau này!
+    const wasAlreadyGraduated = Boolean(enrollment.completedAt || existingCert);
+    const effectiveProgressPercent = wasAlreadyGraduated ? 100 : rawPercent;
+    const effectiveCompletedAt =
+      wasAlreadyGraduated
+        ? (enrollment.completedAt ?? existingCert?.issuedAt ?? new Date())
+        : rawPercent >= 100
+          ? new Date()
+          : null;
 
     await this.prisma.enrollment.update({
       where: { id: enrollment.id },
       data: {
         completedLessonsCount: safeCompleted,
-        progressPercent,
-        completedAt: progressPercent >= 100 ? (enrollment.completedAt ?? new Date()) : null,
+        progressPercent: effectiveProgressPercent,
+        completedAt: effectiveCompletedAt,
       },
     });
 
-    let certificate = null;
-    if (progressPercent >= 100 && totalLessons > 0) {
+    let certificate = existingCert;
+    if (!certificate && effectiveProgressPercent >= 100 && totalLessons > 0) {
       certificate = await this.certificatesService.ensureIssuedForCompletion(userId, courseId);
     }
 
+    const isCertifiedCompleted = Boolean(effectiveCompletedAt || certificate);
+    const bonusLessonsRemaining = isCertifiedCompleted
+      ? Math.max(0, totalLessons - safeCompleted)
+      : 0;
+
     return {
-      progressPercent,
+      progressPercent: effectiveProgressPercent,
       completedLessonsCount: safeCompleted,
       totalLessons,
+      isCertifiedCompleted,
+      bonusLessonsRemaining,
       certificate: certificate
         ? {
             certCode: certificate.certCode,
@@ -273,6 +419,8 @@ export class LearningService {
         progressPercent: 0,
         completedLessonsCount: 0,
         totalLessons: 0,
+        isCertifiedCompleted: false,
+        bonusLessonsRemaining: 0,
         certificate: null,
       };
     }
@@ -312,6 +460,7 @@ export class LearningService {
               id: true,
               slug: true,
               title: true,
+              status: true,
               thumbnailUrl: true,
               level: true,
               totalLessons: true,
@@ -333,11 +482,19 @@ export class LearningService {
 
     return enrollments.map((enr) => {
       const cert = certByCourse.get(enr.courseId);
+      const isCertifiedCompleted = Boolean(enr.completedAt || cert);
+      const progressPercent = isCertifiedCompleted ? 100 : Number(enr.progressPercent);
+      const bonusLessonsRemaining = isCertifiedCompleted
+        ? Math.max(0, enr.course.totalLessons - enr.completedLessonsCount)
+        : 0;
+
       return {
         id: enr.id,
         courseId: enr.courseId,
-        progressPercent: Number(enr.progressPercent),
+        progressPercent,
         completedLessonsCount: enr.completedLessonsCount,
+        isCertifiedCompleted,
+        bonusLessonsRemaining,
         enrolledAt: enr.enrolledAt,
         completedAt: enr.completedAt,
         lastLesson: enr.lastLesson,
@@ -364,21 +521,17 @@ export class LearningService {
       throw new NotFoundException('Không tìm thấy khóa học.');
     }
 
-    const { course, enrollment, isStaffPreview } = await this.resolveCourseAccess(
-      user,
-      courseRecord.id,
-    );
+    const { course, enrollment, certificate, isStaffPreview, isGraduate, progressionConfig } =
+      await this.resolveCourseAccess(user, courseRecord.id);
 
-    const [structure, certificate, myReview] = await Promise.all([
+    const [structure, myReview] = await Promise.all([
       this.buildLessonOrderAndLocks(
         course.id,
         user.id,
-        course.sequentialLockEnabled,
+        progressionConfig,
         isStaffPreview,
+        isGraduate,
       ),
-      this.prisma.certificate.findUnique({
-        where: { userId_courseId: { userId: user.id, courseId: course.id } },
-      }),
       this.prisma.courseReview.findUnique({
         where: { userId_courseId: { userId: user.id, courseId: course.id } },
         select: {
@@ -392,42 +545,50 @@ export class LearningService {
       }),
     ]);
 
-    const sections = structure.sections.map((sec) => ({
-      id: sec.id,
-      title: sec.title,
-      sortOrder: sec.sortOrder,
-      lessons: sec.lessons.map((l) => {
-        const prog = structure.progressMap.get(l.id);
-        const watchedPercent =
-          l.type === PrismaLessonType.VIDEO && l.videoDurationSec > 0
-            ? Math.min(100, Math.round(((prog?.uniqueWatchedSec ?? 0) / l.videoDurationSec) * 100))
-            : prog?.isCompleted
-              ? 100
-              : 0;
+    const sections = structure.sections.map((sec) => {
+      const secLock = structure.sectionLockMap.get(sec.id);
+      return {
+        id: sec.id,
+        title: sec.title,
+        sortOrder: sec.sortOrder,
+        isUnlocked: secLock?.isUnlocked ?? true,
+        lockedMessage: secLock?.lockedMessage ?? null,
+        lessons: sec.lessons.map((l) => {
+          const prog = structure.progressMap.get(l.id);
+          const versions = structure.versionsMap.get(l.id) ?? [];
+          const watchedPercent =
+            l.type === PrismaLessonType.VIDEO && l.videoDurationSec > 0
+              ? Math.min(100, Math.round(((prog?.uniqueWatchedSec ?? 0) / l.videoDurationSec) * 100))
+              : prog?.isCompleted
+                ? 100
+                : 0;
+          const lockInfo = structure.lockedReasonMap.get(l.id);
 
-        return {
-          id: l.id,
-          title: l.title,
-          type: l.type,
-          sortOrder: l.sortOrder,
-          videoDurationSec: l.videoDurationSec,
-          isUnlocked: structure.unlockedSet.has(l.id),
-          isCompleted: Boolean(prog?.isCompleted),
-          lastPositionSec: prog?.lastPositionSec ?? 0,
-          uniqueWatchedSec: prog?.uniqueWatchedSec ?? 0,
-          watchedPercent,
-          quizMeta: l.quiz
-            ? {
-                passScorePercent: l.quiz.passScorePercent,
-                timeLimitSec: l.quiz.timeLimitSec,
-                questionsCount: l.quiz._count.questions,
-              }
-            : null,
-        };
-      }),
-    }));
+          return {
+            id: l.id,
+            title: l.title,
+            type: l.type,
+            sortOrder: l.sortOrder,
+            videoDurationSec: l.videoDurationSec,
+            isUnlocked: structure.unlockedSet.has(l.id),
+            lockedMessage: lockInfo?.message ?? null,
+            isCompleted: Boolean(prog?.isCompleted),
+            lastPositionSec: prog?.lastPositionSec ?? 0,
+            uniqueWatchedSec: prog?.uniqueWatchedSec ?? 0,
+            watchedPercent,
+            versionCount: versions.length,
+            quizMeta: l.quiz
+              ? {
+                  passScorePercent: l.quiz.passScorePercent,
+                  timeLimitSec: l.quiz.timeLimitSec,
+                  questionsCount: l.quiz._count.questions,
+                }
+              : null,
+          };
+        }),
+      };
+    });
 
-    // Chọn bài học mặc định hợp lý: bài đang xem dở -> bài chưa xong đầu tiên -> bài đầu tiên
     let initialLessonId: string | null = null;
     if (enrollment?.lastLessonId && structure.unlockedSet.has(enrollment.lastLessonId)) {
       initialLessonId = enrollment.lastLessonId;
@@ -438,12 +599,22 @@ export class LearningService {
       initialLessonId = firstIncompleteUnlocked?.id ?? structure.flatLessons[0]?.id ?? null;
     }
 
+    const completedCount = enrollment?.completedLessonsCount ?? structure.flatLessons.length;
+    const effectiveProgress = isGraduate
+      ? 100
+      : Number(enrollment?.progressPercent ?? 100);
+    const bonusLessonsRemaining = isGraduate
+      ? Math.max(0, structure.flatLessons.length - completedCount)
+      : 0;
+
     return {
       course: {
         id: course.id,
         slug: course.slug,
         title: course.title,
-        sequentialLockEnabled: course.sequentialLockEnabled,
+        status: course.status,
+        sequentialLockEnabled: progressionConfig.mode !== 'FREE',
+        progressionConfig,
         minWatchPercent: course.minWatchPercent,
         totalLessons: structure.flatLessons.length,
         totalDurationSec: course.totalDurationSec,
@@ -453,8 +624,10 @@ export class LearningService {
       enrollment: enrollment
         ? {
             id: enrollment.id,
-            progressPercent: Number(enrollment.progressPercent),
-            completedLessonsCount: enrollment.completedLessonsCount,
+            progressPercent: effectiveProgress,
+            completedLessonsCount: completedCount,
+            isCertifiedCompleted: isGraduate,
+            bonusLessonsRemaining,
             lastLessonId: enrollment.lastLessonId,
             enrolledAt: enrollment.enrolledAt,
             completedAt: enrollment.completedAt,
@@ -463,6 +636,8 @@ export class LearningService {
             id: null,
             progressPercent: 100,
             completedLessonsCount: structure.flatLessons.length,
+            isCertifiedCompleted: false,
+            bonusLessonsRemaining: 0,
             lastLessonId: initialLessonId,
             enrolledAt: new Date(),
             completedAt: null,
@@ -482,10 +657,8 @@ export class LearningService {
   }
 
   async getLessonContent(user: AuthenticatedUser, slug: string, lessonId: string) {
-    const { lesson, course, enrollment, structure } = await this.assertLessonAccessAndUnlock(
-      user,
-      lessonId,
-    );
+    const { lesson, course, enrollment, progressionConfig, structure } =
+      await this.assertLessonAccessAndUnlock(user, lessonId);
 
     if (course.slug !== slug) {
       throw new NotFoundException('Bài học không thuộc khóa học này.');
@@ -498,10 +671,21 @@ export class LearningService {
       });
     }
 
-    const playbackUrl =
+    const [playbackUrl, rawVersions] = await Promise.all([
       lesson.type === PrismaLessonType.VIDEO
-        ? await this.storage.resolvePlaybackUrl(lesson.videoStorageKey, 7200)
-        : null;
+        ? this.storage.resolvePlaybackUrl(lesson.videoStorageKey, 7200)
+        : Promise.resolve(null),
+      readLessonVersions(this.prisma, lesson.id),
+    ]);
+
+    const versions = await Promise.all(
+      rawVersions.map(async (v) => ({
+        ...v,
+        playbackUrl: v.videoStorageKey
+          ? await this.storage.resolvePlaybackUrl(v.videoStorageKey, 7200)
+          : null,
+      })),
+    );
 
     const prog = structure.progressMap.get(lesson.id);
     const prev = structure.prevLessonMap.get(lesson.id) ?? null;
@@ -514,6 +698,11 @@ export class LearningService {
           ? 100
           : 0;
 
+    const maxReachedSec = this.computeMaxReachedSec(
+      prog?.watchedRangesJson,
+      prog?.lastPositionSec ?? 0,
+    );
+
     return {
       id: lesson.id,
       courseId: course.id,
@@ -522,11 +711,14 @@ export class LearningService {
       type: lesson.type,
       videoDurationSec: lesson.videoDurationSec,
       minWatchPercent: course.minWatchPercent,
+      progressionConfig,
       playbackUrl,
       articleMd: lesson.type === PrismaLessonType.ARTICLE ? lesson.articleMd : null,
       resources: Array.isArray(lesson.resourcesJson) ? lesson.resourcesJson : [],
+      versions,
       progress: {
         lastPositionSec: prog?.lastPositionSec ?? 0,
+        maxReachedSec,
         uniqueWatchedSec: prog?.uniqueWatchedSec ?? 0,
         watchedPercent,
         isCompleted: Boolean(prog?.isCompleted),
@@ -545,7 +737,7 @@ export class LearningService {
   }
 
   // ============================================================================
-  // VIDEO HEARTBEAT (ANTI-CHEAT + RESUME) & ARTICLE COMPLETE
+  // VIDEO HEARTBEAT (HARD ANTI-SEEK + WALL-CLOCK VELOCITY + RESUME)
   // ============================================================================
 
   async recordVideoHeartbeat(
@@ -553,21 +745,19 @@ export class LearningService {
     lessonId: string,
     input: VideoHeartbeatInput,
   ) {
-    const { lesson, course, enrollment, isStaffPreview } = await this.assertLessonAccessAndUnlock(
-      user,
-      lessonId,
-    );
+    const { lesson, course, enrollment, isStaffPreview, progressionConfig } =
+      await this.assertLessonAccessAndUnlock(user, lessonId);
 
     if (lesson.type !== PrismaLessonType.VIDEO) {
       throw new BadRequestException('Chỉ bài học dạng Video mới ghi nhận heartbeat.');
     }
 
-    // Chế độ xem trước của Giảng viên/Admin không cần ghi vào enrollment
     if (!enrollment && isStaffPreview) {
       return {
         acceptedSegment: true,
         cheatDetected: false,
         lastPositionSec: Math.round(input.currentSec),
+        maxReachedSec: Math.round(input.currentSec),
         uniqueWatchedSec: 0,
         watchedPercent: 100,
         isCompleted: true,
@@ -581,6 +771,12 @@ export class LearningService {
       where: { userId_lessonId: { userId: user.id, lessonId: lesson.id } },
     });
 
+    const currentRanges = parseWatchRanges(existing?.watchedRangesJson);
+    const prevMaxReached = this.computeMaxReachedSec(
+      existing?.watchedRangesJson,
+      existing?.lastPositionSec ?? 0,
+    );
+
     const validation = validateHeartbeatSegment({
       fromSec: input.fromSec,
       toSec: input.toSec,
@@ -589,20 +785,29 @@ export class LearningService {
       now,
     });
 
-    const currentRanges = parseWatchRanges(existing?.watchedRangesJson);
-    let nextRanges = currentRanges;
+    // Chặn tua quá ngưỡng % cho phép ngay ở phía server nếu bài chưa hoàn thành
+    const durationSec = lesson.videoDurationSec;
+    const allowedAheadSec =
+      durationSec > 0
+        ? Math.round((durationSec * progressionConfig.maxSeekAheadPercent) / 100)
+        : 0;
+    const serverCeiling = prevMaxReached + Math.max(15, allowedAheadSec + 12);
+    const jumpedPastUnwatched =
+      progressionConfig.blockFastForward &&
+      !existing?.isCompleted &&
+      validation.clampedFrom > serverCeiling;
 
-    if (validation.accepted) {
+    let nextRanges = currentRanges;
+    let acceptedSegment = validation.accepted && !jumpedPastUnwatched;
+
+    if (acceptedSegment) {
       nextRanges = mergeWatchIntervals(
         [...currentRanges, [validation.clampedFrom, validation.clampedTo]],
-        lesson.videoDurationSec > 0 ? lesson.videoDurationSec : undefined,
+        durationSec > 0 ? durationSec : undefined,
       );
     }
 
     const uniqueWatchedSec = calcUniqueWatchedSeconds(nextRanges);
-    const durationSec = lesson.videoDurationSec;
-
-    // Xử lý an toàn cả trường hợp video chưa lưu duration (videoDurationSec === 0)
     const watchedPercent =
       durationSec > 0
         ? Math.min(100, Math.round((uniqueWatchedSec / durationSec) * 100))
@@ -616,10 +821,17 @@ export class LearningService {
     const wasCompleted = Boolean(existing?.isCompleted);
     const isCompleted = wasCompleted || reachedCompletion;
 
-    const clampedPos =
+    // Không cho lastPositionSec nhảy vượt quá trần đã xem khi khóa tua đang bật
+    const rawClampedPos =
       durationSec > 0
         ? Math.max(0, Math.min(Math.round(input.currentSec), durationSec))
         : Math.max(0, Math.round(input.currentSec));
+
+    const nextMaxReached = this.computeMaxReachedSec(nextRanges, prevMaxReached);
+    const safeLastPos =
+      progressionConfig.blockFastForward && !isCompleted && jumpedPastUnwatched
+        ? prevMaxReached
+        : rawClampedPos;
 
     await this.prisma.lessonProgress.upsert({
       where: { userId_lessonId: { userId: user.id, lessonId: lesson.id } },
@@ -628,7 +840,7 @@ export class LearningService {
         userId: user.id,
         courseId: course.id,
         lessonId: lesson.id,
-        lastPositionSec: clampedPos,
+        lastPositionSec: safeLastPos,
         watchedRangesJson: nextRanges as unknown as Prisma.InputJsonValue,
         uniqueWatchedSec,
         isCompleted,
@@ -636,7 +848,7 @@ export class LearningService {
         lastHeartbeatAt: now,
       },
       update: {
-        lastPositionSec: clampedPos,
+        lastPositionSec: safeLastPos,
         watchedRangesJson: nextRanges as unknown as Prisma.InputJsonValue,
         uniqueWatchedSec,
         isCompleted,
@@ -651,10 +863,11 @@ export class LearningService {
     }
 
     return {
-      acceptedSegment: validation.accepted,
-      cheatDetected: !validation.accepted && validation.reason !== 'EMPTY_SEGMENT',
-      reason: validation.reason ?? null,
-      lastPositionSec: clampedPos,
+      acceptedSegment,
+      cheatDetected: jumpedPastUnwatched || (!validation.accepted && validation.reason !== 'EMPTY_SEGMENT'),
+      reason: jumpedPastUnwatched ? 'FAST_FORWARD_BLOCKED' : (validation.reason ?? null),
+      lastPositionSec: safeLastPos,
+      maxReachedSec: Math.max(nextMaxReached, safeLastPos),
       uniqueWatchedSec,
       watchedPercent,
       minWatchPercent: course.minWatchPercent,
@@ -850,7 +1063,9 @@ export class LearningService {
       user.role === Role.ADMIN;
 
     if (!canResolve) {
-      throw new ForbiddenException('Chỉ người đặt câu hỏi hoặc giảng viên mới được đánh dấu đã giải quyết.');
+      throw new ForbiddenException(
+        'Chỉ người đặt câu hỏi hoặc giảng viên mới được đánh dấu đã giải quyết.',
+      );
     }
 
     return this.prisma.lessonQuestion.update({

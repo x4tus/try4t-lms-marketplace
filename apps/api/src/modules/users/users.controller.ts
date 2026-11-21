@@ -4,11 +4,13 @@ import type { InstructorApplicationStatus as PrismaAppStatus } from '@prisma/cli
 import {
   adminUpdateUserSchema,
   becomeInstructorSchema,
+  changePasswordSchema,
   reviewInstructorApplicationSchema,
   Role,
   updateProfileSchema,
   type AdminUpdateUserInput,
   type BecomeInstructorInput,
+  type ChangePasswordInput,
   type ReviewInstructorApplicationInput,
   type UpdateProfileInput,
 } from '@try4t/shared';
@@ -24,12 +26,27 @@ export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
   @Patch('me')
-  @ApiOperation({ summary: 'Cập nhật hồ sơ cá nhân & bảng màu giao diện' })
+  @ApiOperation({ summary: 'Cập nhật hồ sơ cá nhân, ảnh đại diện & toàn bộ cài đặt tài khoản' })
   updateProfile(
     @CurrentUser('id') userId: string,
     @Body(new ZodValidationPipe(updateProfileSchema)) body: UpdateProfileInput,
   ) {
     return this.usersService.updateProfile(userId, body);
+  }
+
+  @Get('me/security')
+  @ApiOperation({ summary: 'Xem thông tin bảo mật, liên kết OAuth & số phiên đăng nhập hiện hoạt' })
+  getSecurity(@CurrentUser('id') userId: string) {
+    return this.usersService.getAccountSecurity(userId);
+  }
+
+  @Post('me/change-password')
+  @ApiOperation({ summary: 'Đổi mật khẩu hoặc tạo mật khẩu lần đầu cho tài khoản OAuth' })
+  changePassword(
+    @CurrentUser('id') userId: string,
+    @Body(new ZodValidationPipe(changePasswordSchema)) body: ChangePasswordInput,
+  ) {
+    return this.usersService.changePassword(userId, body);
   }
 
   @Post('become-instructor')

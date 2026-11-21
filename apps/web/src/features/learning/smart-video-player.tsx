@@ -1,8 +1,12 @@
 'use client';
 
 import * as React from 'react';
-import { CheckCircle2, Gauge, Keyboard, ShieldCheck, Youtube } from 'lucide-react';
-import { formatDuration, parseVideoSource } from '@try4t/shared';
+import { CheckCircle2, Gauge, Keyboard, Lock, ShieldCheck, Youtube } from 'lucide-react';
+import {
+  formatDuration,
+  parseVideoSource,
+  type CourseProgressionConfig,
+} from '@try4t/shared';
 import { Badge } from '@/components/ui/badge';
 import { useAuthStore } from '@/features/auth/auth.store';
 import { api } from '@/lib/api-client';
@@ -12,7 +16,6 @@ import type { HeartbeatResponse, VideoPlayerHandle } from './types';
 
 const SPEED_OPTIONS = [0.75, 1, 1.25, 1.5, 1.75, 2];
 
-// Lightweight YouTube IFrame API types (zero extra npm deps)
 interface YTPlayerInstance {
   playVideo: () => void;
   pauseVideo: () => void;
@@ -73,7 +76,9 @@ function loadYouTubeIframeApi(): Promise<YTGlobal> {
         prev?.();
         if (window.YT) resolve(window.YT);
       };
-      const existingScript = document.querySelector('script[src="https://www.youtube.com/iframe_api"]');
+      const existingScript = document.querySelector(
+        'script[src="https://www.youtube.com/iframe_api"]',
+      );
       if (!existingScript) {
         const tag = document.createElement('script');
         tag.src = 'https://www.youtube.com/iframe_api';
@@ -90,10 +95,16 @@ interface SmartVideoPlayerProps {
   playbackUrl: string | null;
   initialPositionSec: number;
   initialWatchedPercent: number;
+  maxReachedSecInitial?: number;
+  videoDurationSec?: number;
   minWatchPercent: number;
+  progressionConfig?: CourseProgressionConfig;
   isCompletedInitial: boolean;
+  isStaffPreview?: boolean;
+  readOnlyVersion?: boolean;
   onProgressUpdated: (res: HeartbeatResponse) => void;
   onQuickNoteShortcut: (currentSec: number) => void;
+  onVideoEnded?: () => void;
 }
 
 export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPlayerProps>(
@@ -103,14 +114,21 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
       playbackUrl,
       initialPositionSec,
       initialWatchedPercent,
+      maxReachedSecInitial = 0,
+      videoDurationSec = 0,
       minWatchPercent,
+      progressionConfig,
       isCompletedInitial,
+      isStaffPreview = false,
+      readOnlyVersion = false,
       onProgressUpdated,
       onQuickNoteShortcut,
+      onVideoEnded,
     },
     ref,
   ) {
     const user = useAuthStore((s) => s.user);
+    const preferredSpeed = user?.themeConfig?.learning?.defaultPlaybackSpeed ?? 1;
     const source = React.useMemo(() => parseVideoSource(playbackUrl), [playbackUrl]);
 
     const videoRef = React.useRef<HTMLVideoElement | null>(null);
@@ -118,33 +136,102 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
     const ytPlayerRef = React.useRef<YTPlayerInstance | null>(null);
     const vimeoIframeRef = React.useRef<HTMLIFrameElement | null>(null);
 
+    const initialFrontier = Math.max(initialPositionSec, maxReachedSecInitial);
     const segmentStartRef = React.useRef<number>(initialPositionSec);
     const lastValidTimeRef = React.useRef<number>(initialPositionSec);
     const currentTimeRef = React.useRef<number>(initialPositionSec);
+    const maxFrontierRef = React.useRef<number>(initialFrontier);
+    const durationRef = React.useRef<number>(videoDurationSec);
     const isPlayingRef = React.useRef<boolean>(false);
-    const playbackRateRef = React.useRef<number>(1);
+    const playbackRateRef = React.useRef<number>(preferredSpeed);
     const resumedForLessonRef = React.useRef<string | null>(null);
     const inFlightRef = React.useRef(false);
+    const lastBlockToastAtRef = React.useRef(0);
+    const isEnforcingSeekRef = React.useRef(false);
 
-    const [playbackRate, setPlaybackRate] = React.useState(1);
+    const [playbackRate, setPlaybackRate] = React.useState(preferredSpeed);
     const [watchedPercent, setWatchedPercent] = React.useState(initialWatchedPercent);
+    const [maxFrontierDisplay, setMaxFrontierDisplay] = React.useState(Math.floor(initialFrontier));
     const [isCompleted, setIsCompleted] = React.useState(isCompletedInitial);
     const [resumedNoticeSec, setResumedNoticeSec] = React.useState<number | null>(null);
+    const [seekBlockedNotice, setSeekBlockedNotice] = React.useState<string | null>(null);
     const [watermarkPos, setWatermarkPos] = React.useState({ top: 14, left: 10 });
 
-    // Đồng bộ lại state khi chuyển sang bài học khác
+    const blockFastForward = progressionConfig?.blockFastForward ?? true;
+    const maxSeekAheadPercent = progressionConfig?.maxSeekAheadPercent ?? 5;
+    const seekLockActive = Boolean(
+      !readOnlyVersion && !isStaffPreview && !isCompleted && blockFastForward,
+    );
+    const seekLockActiveRef = React.useRef(seekLockActive);
+    seekLockActiveRef.current = seekLockActive;
+
+    const getSeekCeiling = React.useCallback(
+      (durationHint?: number) => {
+        const dur =
+          durationHint && Number.isFinite(durationHint) && durationHint > 0
+            ? durationHint
+            : durationRef.current || videoDurationSec || 0;
+        const aheadSec = dur > 0 ? Math.round((dur * maxSeekAheadPercent) / 100) : 0;
+        const rawCeiling = maxFrontierRef.current + aheadSec;
+        return dur > 0 ? Math.min(dur, rawCeiling) : rawCeiling;
+      },
+      [maxSeekAheadPercent, videoDurationSec],
+    );
+
+    const notifySeekBlocked = React.useCallback(
+      (ceilingSec: number) => {
+        const now = Date.now();
+        const safeLabel = formatDuration(Math.max(0, Math.floor(ceilingSec)));
+        setSeekBlockedNotice(`Đã chặn tua vượt mốc ${safeLabel}`);
+        window.setTimeout(() => {
+          setSeekBlockedNotice((prev) =>
+            prev === `Đã chặn tua vượt mốc ${safeLabel}` ? null : prev,
+          );
+        }, 2500);
+
+        if (now - lastBlockToastAtRef.current < 2400) return;
+        lastBlockToastAtRef.current = now;
+        notify.warning('Không thể tua vượt phần chưa xem', {
+          description:
+            maxSeekAheadPercent > 0
+              ? `Khóa học chỉ cho phép tua trước tối đa +${maxSeekAheadPercent}% (mốc hiện tại: ${safeLabel}).`
+              : `Khóa học bật chặn tua tuyệt đối — hãy xem tiếp từ mốc ${safeLabel}.`,
+        });
+      },
+      [maxSeekAheadPercent],
+    );
+
+    // Sync state on lesson change
     React.useEffect(() => {
+      const frontier = Math.max(initialPositionSec, maxReachedSecInitial);
       setWatchedPercent(initialWatchedPercent);
       setIsCompleted(isCompletedInitial);
+      setMaxFrontierDisplay(Math.floor(frontier));
       segmentStartRef.current = initialPositionSec;
       lastValidTimeRef.current = initialPositionSec;
       currentTimeRef.current = initialPositionSec;
+      maxFrontierRef.current = frontier;
+      durationRef.current = videoDurationSec;
       isPlayingRef.current = false;
       resumedForLessonRef.current = null;
       setResumedNoticeSec(null);
-    }, [lessonId, initialPositionSec, initialWatchedPercent, isCompletedInitial]);
+      setSeekBlockedNotice(null);
+    }, [
+      lessonId,
+      playbackUrl,
+      initialPositionSec,
+      initialWatchedPercent,
+      maxReachedSecInitial,
+      videoDurationSec,
+      isCompletedInitial,
+    ]);
 
-    // Dynamic Drifting Watermark (chống quay màn hình chia sẻ lậu)
+    React.useEffect(() => {
+      setPlaybackRate(preferredSpeed);
+      playbackRateRef.current = preferredSpeed;
+    }, [preferredSpeed]);
+
+    // Dynamic Drifting Watermark
     React.useEffect(() => {
       const moveWatermark = () => {
         const top = 10 + Math.floor(Math.random() * 68);
@@ -156,10 +243,29 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
       return () => window.clearInterval(timer);
     }, []);
 
+    const advanceFrontierIfValid = React.useCallback((nextSec: number, maxStep = 2.6) => {
+      const delta = nextSec - lastValidTimeRef.current;
+      if (delta >= 0 && delta <= maxStep) {
+        if (nextSec > maxFrontierRef.current) {
+          maxFrontierRef.current = nextSec;
+          const floored = Math.floor(nextSec);
+          setMaxFrontierDisplay((prev) => (floored > prev ? floored : prev));
+        }
+        lastValidTimeRef.current = nextSec;
+        return true;
+      }
+      if (delta < 0 && Math.abs(delta) <= maxStep) {
+        lastValidTimeRef.current = nextSec;
+        return true;
+      }
+      return false;
+    }, []);
+
     const sendHeartbeatSegment = React.useCallback(
       async (currentSec: number, fromSec: number, toSec: number, rate: number, force = false) => {
+        if (readOnlyVersion) return;
         if (inFlightRef.current) return;
-        if (!force && toSec - fromSec < 2) return;
+        if (!force && toSec - fromSec < 1.5) return;
 
         const safeFrom = toSec > fromSec ? fromSec : Math.max(0, currentSec - 0.5);
         const safeTo = Math.max(safeFrom, currentSec);
@@ -176,8 +282,12 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
 
           setWatchedPercent(res.watchedPercent);
           setIsCompleted(res.isCompleted);
+          if (typeof res.maxReachedSec === 'number' && res.maxReachedSec > maxFrontierRef.current) {
+            maxFrontierRef.current = res.maxReachedSec;
+            setMaxFrontierDisplay(Math.floor(res.maxReachedSec));
+          }
 
-          if (res.cheatDetected) {
+          if (res.cheatDetected && !seekLockActiveRef.current) {
             notify.warning('Phát hiện tua nhanh bất thường', {
               description: 'Đoạn video bị tua qua sẽ không được tính vào tiến độ hoàn thành.',
             });
@@ -193,16 +303,17 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
 
           onProgressUpdated(res);
         } catch {
-          // Bỏ qua lỗi mạng tạm thời, nhịp tiếp theo sẽ tiếp tục đồng bộ
+          // Ignore transient network hiccup; next heartbeat retries automatically
         } finally {
           inFlightRef.current = false;
         }
       },
-      [lessonId, onProgressUpdated],
+      [lessonId, onProgressUpdated, readOnlyVersion],
     );
 
     const flushCurrentPlayerHeartbeat = React.useCallback(
       (force = false) => {
+        if (readOnlyVersion) return;
         if (source?.provider === 'DIRECT') {
           const v = videoRef.current;
           if (!v) return;
@@ -236,11 +347,23 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
           );
         }
       },
-      [source?.provider, sendHeartbeatSegment],
+      [source?.provider, sendHeartbeatSegment, readOnlyVersion],
     );
 
+    // Flush progress cleanly when user switches tab or closes page
+    React.useEffect(() => {
+      if (readOnlyVersion) return;
+      const onVis = () => {
+        if (document.visibilityState === 'hidden') {
+          flushCurrentPlayerHeartbeat(true);
+        }
+      };
+      document.addEventListener('visibilitychange', onVis);
+      return () => document.removeEventListener('visibilitychange', onVis);
+    }, [flushCurrentPlayerHeartbeat, readOnlyVersion]);
+
     // =========================================================================
-    // YOUTUBE IFRAME PLAYER API (Resume + Anti-Cheat + Speed + Notes Seek)
+    // YOUTUBE IFRAME PLAYER API (Instant Anti-Seek + Resume + 5s Heartbeat)
     // =========================================================================
     React.useEffect(() => {
       if (source?.provider !== 'YOUTUBE' || !source.videoId || !ytHostRef.current) return;
@@ -258,7 +381,8 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
           mountNode.style.height = '100%';
           ytHostRef.current.appendChild(mountNode);
 
-          const startSec = initialPositionSec > 2 ? Math.floor(initialPositionSec) : 0;
+          const startSec =
+            !readOnlyVersion && initialPositionSec > 2 ? Math.floor(initialPositionSec) : 0;
 
           const player = new YT.Player(mountNode, {
             videoId: source.videoId!,
@@ -275,6 +399,8 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
             events: {
               onReady: () => {
                 if (disposed) return;
+                const d = Number(player.getDuration?.() ?? 0);
+                if (d > 0) durationRef.current = d;
                 player.setPlaybackRate(playbackRateRef.current);
                 if (startSec > 2 && resumedForLessonRef.current !== lessonId) {
                   resumedForLessonRef.current = lessonId;
@@ -288,6 +414,21 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
                 if (state === YT.PlayerState.PLAYING) {
                   isPlayingRef.current = true;
                   const cur = player.getCurrentTime();
+                  const d = Number(player.getDuration?.() ?? 0);
+                  if (d > 0) durationRef.current = d;
+
+                  if (seekLockActiveRef.current) {
+                    const ceiling = getSeekCeiling(d);
+                    if (cur > ceiling + 1.2) {
+                      const snap = Math.max(0, ceiling - 0.3);
+                      player.seekTo(snap, true);
+                      segmentStartRef.current = snap;
+                      lastValidTimeRef.current = snap;
+                      currentTimeRef.current = snap;
+                      notifySeekBlocked(ceiling);
+                      return;
+                    }
+                  }
                   segmentStartRef.current = cur;
                   lastValidTimeRef.current = cur;
                   currentTimeRef.current = cur;
@@ -305,6 +446,9 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
                     player.getPlaybackRate() || 1,
                     true,
                   );
+                  if (state === YT.PlayerState.ENDED) {
+                    onVideoEnded?.();
+                  }
                 }
               },
             },
@@ -312,21 +456,35 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
 
           ytPlayerRef.current = player;
 
-          // Kiểm tra tua đột ngột mỗi giây
+          // Tight 500ms real-time seek guard (catches scrubbing even while paused)
           pollTimer = window.setInterval(() => {
-            if (!isPlayingRef.current) return;
             const cur = Number(player.getCurrentTime?.() ?? 0);
-            if (Math.abs(cur - lastValidTimeRef.current) <= 3.5) {
-              lastValidTimeRef.current = cur;
-            } else {
-              // Người dùng tua -> reset mốc bắt đầu đoạn xem mới
-              segmentStartRef.current = cur;
-              lastValidTimeRef.current = cur;
+            const d = Number(player.getDuration?.() ?? 0);
+            if (d > 0) durationRef.current = d;
+
+            if (seekLockActiveRef.current) {
+              const ceiling = getSeekCeiling(d);
+              if (cur > ceiling + 1.2) {
+                const snap = Math.max(0, ceiling - 0.3);
+                player.seekTo(snap, true);
+                segmentStartRef.current = snap;
+                lastValidTimeRef.current = snap;
+                currentTimeRef.current = snap;
+                notifySeekBlocked(ceiling);
+                return;
+              }
+            }
+
+            if (isPlayingRef.current) {
+              if (!advanceFrontierIfValid(cur, 3.0)) {
+                segmentStartRef.current = cur;
+                lastValidTimeRef.current = cur;
+              }
             }
             currentTimeRef.current = cur;
-          }, 1000);
+          }, 500);
 
-          // Heartbeat mỗi 10 giây khi đang phát
+          // Reliable 5s heartbeat while playing
           heartbeatTimer = window.setInterval(() => {
             if (!isPlayingRef.current) return;
             const cur = Number(player.getCurrentTime?.() ?? currentTimeRef.current);
@@ -337,7 +495,7 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
               player.getPlaybackRate?.() || 1,
               false,
             );
-          }, 10_000);
+          }, 5000);
         })
         .catch(() => {});
 
@@ -345,7 +503,7 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
         disposed = true;
         if (pollTimer) window.clearInterval(pollTimer);
         if (heartbeatTimer) window.clearInterval(heartbeatTimer);
-        flushCurrentPlayerHeartbeat(false);
+        flushCurrentPlayerHeartbeat(true);
         try {
           ytPlayerRef.current?.destroy();
         } catch {
@@ -354,10 +512,10 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
         ytPlayerRef.current = null;
       };
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [source?.provider, source?.videoId, lessonId]);
+    }, [source?.provider, source?.videoId, lessonId, readOnlyVersion]);
 
     // =========================================================================
-    // VIMEO POSTMESSAGE API (Resume + Anti-Cheat + Speed + Notes Seek)
+    // VIMEO POSTMESSAGE API (Instant Anti-Seek + Resume + 5s Heartbeat)
     // =========================================================================
     const postVimeoCommand = React.useCallback((method: string, value?: unknown) => {
       const win = vimeoIframeRef.current?.contentWindow;
@@ -384,7 +542,7 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
             postVimeoCommand('addEventListener', 'timeupdate');
             postVimeoCommand('addEventListener', 'seeked');
             postVimeoCommand('setPlaybackRate', playbackRateRef.current);
-            if (initialPositionSec > 2 && resumedForLessonRef.current !== lessonId) {
+            if (!readOnlyVersion && initialPositionSec > 2 && resumedForLessonRef.current !== lessonId) {
               resumedForLessonRef.current = lessonId;
               postVimeoCommand('setCurrentTime', initialPositionSec);
               setResumedNoticeSec(initialPositionSec);
@@ -395,19 +553,31 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
             const sec = Number(data.data?.seconds ?? currentTimeRef.current);
             segmentStartRef.current = sec;
             lastValidTimeRef.current = sec;
-          } else if (data.event === 'timeupdate') {
+          } else if (data.event === 'timeupdate' || data.event === 'seeked') {
             const sec = Number(data.data?.seconds ?? 0);
-            if (Math.abs(sec - lastValidTimeRef.current) <= 3) {
+            const dur = Number(data.data?.duration ?? durationRef.current);
+            if (dur > 0) durationRef.current = dur;
+
+            if (seekLockActiveRef.current) {
+              const ceiling = getSeekCeiling(dur);
+              if (sec > ceiling + 1.2) {
+                const snap = Math.max(0, ceiling - 0.3);
+                postVimeoCommand('setCurrentTime', snap);
+                segmentStartRef.current = snap;
+                lastValidTimeRef.current = snap;
+                currentTimeRef.current = snap;
+                notifySeekBlocked(ceiling);
+                return;
+              }
+            }
+
+            if (data.event === 'seeked') {
+              segmentStartRef.current = sec;
               lastValidTimeRef.current = sec;
-            } else {
+            } else if (!advanceFrontierIfValid(sec, 2.8)) {
               segmentStartRef.current = sec;
               lastValidTimeRef.current = sec;
             }
-            currentTimeRef.current = sec;
-          } else if (data.event === 'seeked') {
-            const sec = Number(data.data?.seconds ?? 0);
-            segmentStartRef.current = sec;
-            lastValidTimeRef.current = sec;
             currentTimeRef.current = sec;
           } else if (data.event === 'pause' || data.event === 'ended') {
             isPlayingRef.current = false;
@@ -420,6 +590,9 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
               playbackRateRef.current,
               true,
             );
+            if (data.event === 'ended') {
+              onVideoEnded?.();
+            }
           }
         } catch {
           // ignore unrelated postMessage events
@@ -431,51 +604,51 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
         if (isPlayingRef.current) {
           flushCurrentPlayerHeartbeat(false);
         }
-      }, 10_000);
+      }, 5000);
 
       return () => {
         window.removeEventListener('message', onMessage);
         window.clearInterval(hb);
-        flushCurrentPlayerHeartbeat(false);
+        flushCurrentPlayerHeartbeat(true);
       };
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [source?.provider, source?.videoId, lessonId]);
+    }, [source?.provider, source?.videoId, lessonId, readOnlyVersion]);
 
     // =========================================================================
-    // GOOGLE DRIVE STUDY TIMER (vì Drive iframe không mở JS time API)
+    // GOOGLE DRIVE STUDY TIMER
     // =========================================================================
     React.useEffect(() => {
-      if (source?.provider !== 'GOOGLE_DRIVE') return;
+      if (source?.provider !== 'GOOGLE_DRIVE' || readOnlyVersion) return;
       const hb = window.setInterval(() => {
         if (document.visibilityState !== 'visible') return;
         const fromSec = currentTimeRef.current;
-        const toSec = fromSec + 10;
+        const toSec = fromSec + 5;
         currentTimeRef.current = toSec;
         void sendHeartbeatSegment(toSec, fromSec, toSec, 1, false);
-      }, 10_000);
+      }, 5000);
 
       return () => window.clearInterval(hb);
-    }, [source?.provider, lessonId, sendHeartbeatSegment]);
+    }, [source?.provider, lessonId, sendHeartbeatSegment, readOnlyVersion]);
 
     // =========================================================================
-    // DIRECT VIDEO PERIODIC HEARTBEAT (10s)
+    // DIRECT VIDEO PERIODIC HEARTBEAT (5s)
     // =========================================================================
     React.useEffect(() => {
-      if (source?.provider !== 'DIRECT') return;
+      if (source?.provider !== 'DIRECT' || readOnlyVersion) return;
       const interval = window.setInterval(() => {
         const v = videoRef.current;
         if (v && !v.paused && !v.ended) {
           flushCurrentPlayerHeartbeat(false);
         }
-      }, 10_000);
+      }, 5000);
 
       return () => {
         window.clearInterval(interval);
-        flushCurrentPlayerHeartbeat(false);
+        flushCurrentPlayerHeartbeat(true);
       };
-    }, [source?.provider, flushCurrentPlayerHeartbeat]);
+    }, [source?.provider, flushCurrentPlayerHeartbeat, readOnlyVersion]);
 
-    // Imperative handle cho Ghi chú mốc thời gian (pause / getCurrentTime / seekTo)
+    // Imperative handle cho Ghi chú mốc thời gian
     React.useImperativeHandle(ref, () => ({
       getCurrentTime: () => {
         if (source?.provider === 'DIRECT') {
@@ -496,7 +669,14 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
         }
       },
       seekTo: (seconds: number) => {
-        const target = Math.max(0, seconds);
+        let target = Math.max(0, seconds);
+        if (seekLockActiveRef.current) {
+          const ceiling = getSeekCeiling();
+          if (target > ceiling) {
+            target = Math.max(0, ceiling - 0.3);
+            notifySeekBlocked(ceiling);
+          }
+        }
         segmentStartRef.current = target;
         lastValidTimeRef.current = target;
         currentTimeRef.current = target;
@@ -513,12 +693,14 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
           postVimeoCommand('setCurrentTime', target);
           postVimeoCommand('play');
         } else {
-          notify.info('Google Drive không hỗ trợ nhảy giây tự động — vui lòng kéo thanh phát thủ công.');
+          notify.info(
+            'Google Drive không hỗ trợ nhảy giây tự động — vui lòng kéo thanh phát thủ công.',
+          );
         }
       },
     }));
 
-    // Phím tắt phòng học (Space, ←/→, M, F, N)
+    // Phím tắt phòng học (Space, ←/→ tôn trọng khóa tua, M, F, N)
     React.useEffect(() => {
       const onKeyDown = (e: KeyboardEvent) => {
         const target = e.target as HTMLElement | null;
@@ -561,7 +743,14 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
             segmentStartRef.current = next;
           } else if (e.key === 'ArrowRight') {
             e.preventDefault();
-            const next = Math.min(p.getDuration() || p.getCurrentTime() + 5, p.getCurrentTime() + 5);
+            let next = Math.min(p.getDuration() || p.getCurrentTime() + 5, p.getCurrentTime() + 5);
+            if (seekLockActiveRef.current) {
+              const ceiling = getSeekCeiling(p.getDuration());
+              if (next > ceiling) {
+                next = Math.max(0, ceiling - 0.25);
+                notifySeekBlocked(ceiling);
+              }
+            }
             p.seekTo(next, true);
             segmentStartRef.current = next;
           } else if (e.key === 'm' || e.key === 'M') {
@@ -584,8 +773,16 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
           segmentStartRef.current = v.currentTime;
         } else if (e.key === 'ArrowRight') {
           e.preventDefault();
-          v.currentTime = Math.min(v.duration || v.currentTime + 5, v.currentTime + 5);
-          segmentStartRef.current = v.currentTime;
+          let next = Math.min(v.duration || v.currentTime + 5, v.currentTime + 5);
+          if (seekLockActiveRef.current) {
+            const ceiling = getSeekCeiling(v.duration);
+            if (next > ceiling) {
+              next = Math.max(0, ceiling - 0.25);
+              notifySeekBlocked(ceiling);
+            }
+          }
+          v.currentTime = next;
+          segmentStartRef.current = next;
         } else if (e.key === 'm' || e.key === 'M') {
           v.muted = !v.muted;
         } else if (e.key === 'f' || e.key === 'F') {
@@ -599,7 +796,7 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
 
       window.addEventListener('keydown', onKeyDown);
       return () => window.removeEventListener('keydown', onKeyDown);
-    }, [source?.provider, onQuickNoteShortcut, postVimeoCommand]);
+    }, [source?.provider, onQuickNoteShortcut, postVimeoCommand, getSeekCeiling, notifySeekBlocked]);
 
     function handleSpeedChange(rate: number) {
       setPlaybackRate(rate);
@@ -625,12 +822,8 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
         <div className="relative aspect-video w-full overflow-hidden rounded-2xl border border-zinc-800 bg-black shadow-xl">
           {source ? (
             <>
-              {/* 1. YOUTUBE PLAYER (Official IFrame API) */}
-              {source.provider === 'YOUTUBE' && (
-                <div ref={ytHostRef} className="h-full w-full" />
-              )}
+              {source.provider === 'YOUTUBE' && <div ref={ytHostRef} className="h-full w-full" />}
 
-              {/* 2. VIMEO PLAYER (postMessage API) */}
               {source.provider === 'VIMEO' && vimeoSrc && (
                 <iframe
                   ref={vimeoIframeRef}
@@ -643,7 +836,6 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
                 />
               )}
 
-              {/* 3. GOOGLE DRIVE PLAYER */}
               {source.provider === 'GOOGLE_DRIVE' && source.embedUrl && (
                 <iframe
                   key={source.embedUrl}
@@ -655,7 +847,6 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
                 />
               )}
 
-              {/* 4. DIRECT CLOUD MP4/R2/CLOUDINARY VIDEO */}
               {source.provider === 'DIRECT' && (
                 <video
                   ref={videoRef}
@@ -666,8 +857,12 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
                   playsInline
                   onLoadedMetadata={(e) => {
                     const v = e.currentTarget;
-                    v.playbackRate = playbackRate;
+                    if (v.duration && Number.isFinite(v.duration)) {
+                      durationRef.current = v.duration;
+                    }
+                    v.playbackRate = playbackRateRef.current;
                     if (
+                      !readOnlyVersion &&
                       resumedForLessonRef.current !== lessonId &&
                       initialPositionSec > 2 &&
                       (!v.duration || initialPositionSec < v.duration - 5)
@@ -685,17 +880,52 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
                     segmentStartRef.current = e.currentTarget.currentTime;
                     lastValidTimeRef.current = e.currentTarget.currentTime;
                   }}
+                  onSeeking={(e) => {
+                    if (!seekLockActiveRef.current || isEnforcingSeekRef.current) return;
+                    const v = e.currentTarget;
+                    const ceiling = getSeekCeiling(v.duration);
+                    if (v.currentTime > ceiling + 0.8) {
+                      isEnforcingSeekRef.current = true;
+                      const snap = Math.max(0, ceiling - 0.25);
+                      v.currentTime = snap;
+                      segmentStartRef.current = snap;
+                      lastValidTimeRef.current = snap;
+                      currentTimeRef.current = snap;
+                      notifySeekBlocked(ceiling);
+                      window.setTimeout(() => {
+                        isEnforcingSeekRef.current = false;
+                      }, 120);
+                    }
+                  }}
                   onTimeUpdate={(e) => {
-                    const nowSec = e.currentTarget.currentTime;
+                    const v = e.currentTarget;
+                    const nowSec = v.currentTime;
+
+                    if (seekLockActiveRef.current && !isEnforcingSeekRef.current) {
+                      const ceiling = getSeekCeiling(v.duration);
+                      if (nowSec > ceiling + 0.8) {
+                        isEnforcingSeekRef.current = true;
+                        const snap = Math.max(0, ceiling - 0.25);
+                        v.currentTime = snap;
+                        segmentStartRef.current = snap;
+                        lastValidTimeRef.current = snap;
+                        currentTimeRef.current = snap;
+                        notifySeekBlocked(ceiling);
+                        window.setTimeout(() => {
+                          isEnforcingSeekRef.current = false;
+                        }, 120);
+                        return;
+                      }
+                    }
+
                     currentTimeRef.current = nowSec;
-                    if (Math.abs(nowSec - lastValidTimeRef.current) <= 2.5) {
-                      lastValidTimeRef.current = nowSec;
-                    } else {
+                    if (!advanceFrontierIfValid(nowSec, 2.5)) {
                       segmentStartRef.current = nowSec;
                       lastValidTimeRef.current = nowSec;
                     }
                   }}
                   onSeeked={(e) => {
+                    if (isEnforcingSeekRef.current) return;
                     segmentStartRef.current = e.currentTarget.currentTime;
                     lastValidTimeRef.current = e.currentTarget.currentTime;
                   }}
@@ -706,6 +936,7 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
                   onEnded={() => {
                     isPlayingRef.current = false;
                     flushCurrentPlayerHeartbeat(true);
+                    onVideoEnded?.();
                   }}
                   className="h-full w-full"
                 />
@@ -725,6 +956,14 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
                   Tiếp tục phát từ {formatDuration(resumedNoticeSec)}
                 </div>
               )}
+
+              {/* Real-time Anti-Seek Feedback Pill */}
+              {seekBlockedNotice && (
+                <div className="pointer-events-none absolute right-4 top-4 z-20 flex items-center gap-1.5 rounded-full bg-amber-600/95 px-3 py-1 text-xs font-semibold text-white shadow-lg backdrop-blur-md">
+                  <Lock className="h-3.5 w-3.5" />
+                  {seekBlockedNotice}
+                </div>
+              )}
             </>
           ) : (
             <div className="flex h-full flex-col items-center justify-center p-6 text-center text-sm text-zinc-400">
@@ -733,10 +972,14 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
           )}
         </div>
 
-        {/* Player Utility Bar: Anti-Cheat Watch Progress + Provider Badge + Speed */}
+        {/* Player Utility Bar */}
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card px-4 py-2.5 text-xs">
-          <div className="flex flex-wrap items-center gap-3">
-            {isCompleted ? (
+          <div className="flex flex-wrap items-center gap-2.5">
+            {readOnlyVersion ? (
+              <Badge variant="outline" className="gap-1 text-amber-600 dark:text-amber-400">
+                Đang xem phiên bản lưu trữ cũ (Tua tự do)
+              </Badge>
+            ) : isCompleted ? (
               <Badge variant="success" className="gap-1">
                 <CheckCircle2 className="h-3.5 w-3.5" />
                 Đã hoàn thành video ({watchedPercent}%)
@@ -760,6 +1003,18 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
               </div>
             )}
 
+            {seekLockActive && (
+              <Badge
+                variant="outline"
+                className="gap-1 border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-700 dark:text-amber-300"
+                title="Hệ thống chặn tua nhanh ngay khi bạn thao tác kéo thanh phát vượt phần chưa xem"
+              >
+                <Lock className="h-3 w-3" />
+                Khóa tua nhanh ({maxSeekAheadPercent > 0 ? `+${maxSeekAheadPercent}%` : 'Chặn cứng'} • Mốc{' '}
+                {formatDuration(maxFrontierDisplay)})
+              </Badge>
+            )}
+
             {source && source.provider !== 'DIRECT' && (
               <Badge variant="outline" className="gap-1 text-[10px]">
                 {source.provider === 'YOUTUBE' && <Youtube className="h-3 w-3 text-rose-500" />}
@@ -769,7 +1024,7 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
 
             <span className="hidden items-center gap-1 text-[11px] text-muted-foreground xl:inline-flex">
               <Keyboard className="h-3.5 w-3.5" />
-              Phím tắt: Space • ←/→ • M • N (Ghi chú)
+              Space • ←/→ • M • N (Ghi chú)
             </span>
           </div>
 

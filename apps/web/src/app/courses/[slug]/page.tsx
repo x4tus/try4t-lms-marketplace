@@ -31,6 +31,8 @@ import { CourseLevel, formatDuration, formatVnd, LessonType, PaymentMethod } fro
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { CourseThumbnail } from '@/components/ui/course-thumbnail';
+import { MarkdownPreview } from '@/components/ui/rich-text-editor';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useAuthModalStore } from '@/features/auth/auth-modal.store';
 import { useAuthStore } from '@/features/auth/auth.store';
@@ -397,9 +399,10 @@ export default function CourseDetailPage() {
                 </div>
               </div>
               {course.instructor.bio && (
-                <p className="text-sm leading-relaxed text-muted-foreground">
-                  {course.instructor.bio}
-                </p>
+                <MarkdownPreview
+                  content={course.instructor.bio}
+                  className="text-sm text-muted-foreground"
+                />
               )}
             </CardContent>
           </Card>
@@ -428,7 +431,10 @@ export default function CourseDetailPage() {
                           </span>
                         </span>
                       </div>
-                      <p className="text-sm text-muted-foreground">{rev.comment}</p>
+                      <MarkdownPreview
+                        content={rev.comment}
+                        className="text-sm text-muted-foreground"
+                      />
                       {rev.instructorReply && (
                         <div className="mt-2 rounded-xl border border-primary/20 bg-primary/5 p-3 text-xs">
                           <p className="font-semibold text-primary">Phản hồi từ Giảng viên:</p>
@@ -447,15 +453,7 @@ export default function CourseDetailPage() {
         <aside className="lg:sticky lg:top-24">
           <Card className="overflow-hidden shadow-lg">
             {/* Preview Thumbnail */}
-            <div className="relative aspect-video bg-secondary">
-              {course.thumbnailUrl && (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={course.thumbnailUrl}
-                  alt={course.title}
-                  className="h-full w-full object-cover"
-                />
-              )}
+            <CourseThumbnail src={course.thumbnailUrl} alt={course.title}>
               {firstPreview && (
                 <button
                   type="button"
@@ -470,7 +468,7 @@ export default function CourseDetailPage() {
                   </span>
                 </button>
               )}
-            </div>
+            </CourseThumbnail>
 
             <CardContent className="space-y-5 p-6">
               {/* Pricing */}

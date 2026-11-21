@@ -1,6 +1,15 @@
 import { z } from 'zod';
 import { CourseLevel, LessonType, QuizQuestionType } from '../enums';
 
+export const courseProgressionConfigSchema = z.object({
+  mode: z.enum(['FREE', 'LESSON_SEQUENTIAL', 'SECTION_SEQUENTIAL']).default('FREE'),
+  blockFastForward: z.boolean().default(true),
+  maxSeekAheadPercent: z.coerce.number().int().min(0).max(30).default(0),
+  requireQuizPass: z.boolean().default(true),
+});
+
+export type CourseProgressionConfigInput = z.infer<typeof courseProgressionConfigSchema>;
+
 export const createCourseSchema = z
   .object({
     title: z
@@ -24,6 +33,7 @@ export const createCourseSchema = z
     descriptionMd: z.string().max(20_000).optional().nullable(),
     sequentialLockEnabled: z.boolean().default(false),
     minWatchPercent: z.coerce.number().int().min(50).max(100).default(80),
+    progressionConfig: courseProgressionConfigSchema.optional(),
   })
   .refine(
     (data) =>
@@ -53,6 +63,7 @@ export const updateCourseSchema = z
     promoVideoKey: z.string().trim().max(500).optional().nullable(),
     sequentialLockEnabled: z.boolean().optional(),
     minWatchPercent: z.coerce.number().int().min(50).max(100).optional(),
+    progressionConfig: courseProgressionConfigSchema.optional(),
   })
   .refine(
     (data) =>
