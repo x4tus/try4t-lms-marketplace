@@ -148,6 +148,7 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
     const inFlightRef = React.useRef(false);
     const lastBlockToastAtRef = React.useRef(0);
     const isEnforcingSeekRef = React.useRef(false);
+    const enforcingUntilRef = React.useRef(0);
 
     const [playbackRate, setPlaybackRate] = React.useState(preferredSpeed);
     const [watchedPercent, setWatchedPercent] = React.useState(initialWatchedPercent);
@@ -178,24 +179,32 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
       [maxSeekAheadPercent, videoDurationSec],
     );
 
-    const notifySeekBlocked = React.useCallback(
+    const getReturnPointBeforeSeek = React.useCallback(
       (ceilingSec: number) => {
-        const now = Date.now();
-        const safeLabel = formatDuration(Math.max(0, Math.floor(ceilingSec)));
-        setSeekBlockedNotice(`Đã chặn tua vượt mốc ${safeLabel}`);
-        window.setTimeout(() => {
-          setSeekBlockedNotice((prev) =>
-            prev === `Đã chặn tua vượt mốc ${safeLabel}` ? null : prev,
-          );
-        }, 2500);
+        const beforeSeek = Math.max(0, lastValidTimeRef.current);
+        return Math.max(0, Math.min(beforeSeek, ceilingSec));
+      },
+      [],
+    );
 
-        if (now - lastBlockToastAtRef.current < 2400) return;
+    const notifySeekBlocked = React.useCallback(
+      (returnSec: number, ceilingSec: number) => {
+        const now = Date.now();
+        const returnLabel = formatDuration(Math.max(0, Math.floor(returnSec)));
+        const ceilingLabel = formatDuration(Math.max(0, Math.floor(ceilingSec)));
+        const pillText = `Chặn tua nhanh • Đã quay lại ${returnLabel}`;
+        setSeekBlockedNotice(pillText);
+        window.setTimeout(() => {
+          setSeekBlockedNotice((prev) => (prev === pillText ? null : prev));
+        }, 2800);
+
+        if (now - lastBlockToastAtRef.current < 2200) return;
         lastBlockToastAtRef.current = now;
         notify.warning('Không thể tua vượt phần chưa xem', {
           description:
             maxSeekAheadPercent > 0
-              ? `Khóa học chỉ cho phép tua trước tối đa +${maxSeekAheadPercent}% (mốc hiện tại: ${safeLabel}).`
-              : `Khóa học bật chặn tua tuyệt đối — hãy xem tiếp từ mốc ${safeLabel}.`,
+              ? `Bạn chỉ được tua tối đa +${maxSeekAheadPercent}% (giới hạn ${ceilingLabel}). Hệ thống đã đưa video quay lại mốc ${returnLabel} trước khi tua.`
+              : `Khóa học bật chặn tua nhanh — đã đưa video quay lại đúng mốc ${returnLabel} trước khi tua.`,
         });
       },
       [maxSeekAheadPercent],
@@ -417,15 +426,16 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
                   const d = Number(player.getDuration?.() ?? 0);
                   if (d > 0) durationRef.current = d;
 
-                  if (seekLockActiveRef.current) {
+                  if (seekLockActiveRef.current && Date.now() >= enforcingUntilRef.current) {
                     const ceiling = getSeekCeiling(d);
                     if (cur > ceiling + 1.2) {
-                      const snap = Math.max(0, ceiling - 0.3);
-                      player.seekTo(snap, true);
-                      segmentStartRef.current = snap;
-                      lastValidTimeRef.current = snap;
-                      currentTimeRef.current = snap;
-                      notifySeekBlocked(ceiling);
+                      const backSec = getReturnPointBeforeSeek(ceiling);
+                      enforcingUntilRef.current = Date.now() + 900;
+                      notifySeekBlocked(backSec, ceiling);
+                      player.seekTo(backSec, true);
+                      segmentStartRef.current = backSec;
+                      lastValidTimeRef.current = backSec;
+                      currentTimeRef.current = backSec;
                       return;
                     }
                   }
@@ -458,6 +468,7 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
 
           // Tight 500ms real-time seek guard (catches scrubbing even while paused)
           pollTimer = window.setInterval(() => {
+            if (Date.now() < enforcingUntilRef.current) return;
             const cur = Number(player.getCurrentTime?.() ?? 0);
             const d = Number(player.getDuration?.() ?? 0);
             if (d > 0) durationRef.current = d;
@@ -465,12 +476,13 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
             if (seekLockActiveRef.current) {
               const ceiling = getSeekCeiling(d);
               if (cur > ceiling + 1.2) {
-                const snap = Math.max(0, ceiling - 0.3);
-                player.seekTo(snap, true);
-                segmentStartRef.current = snap;
-                lastValidTimeRef.current = snap;
-                currentTimeRef.current = snap;
-                notifySeekBlocked(ceiling);
+                const backSec = getReturnPointBeforeSeek(ceiling);
+                enforcingUntilRef.current = Date.now() + 900;
+                notifySeekBlocked(backSec, ceiling);
+                player.seekTo(backSec, true);
+                segmentStartRef.current = backSec;
+                lastValidTimeRef.current = backSec;
+                currentTimeRef.current = backSec;
                 return;
               }
             }
@@ -551,9 +563,12 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
           } else if (data.event === 'play') {
             isPlayingRef.current = true;
             const sec = Number(data.data?.seconds ?? currentTimeRef.current);
-            segmentStartRef.current = sec;
-            lastValidTimeRef.current = sec;
+            if (!seekLockActiveRef.current || sec <= getSeekCeiling() + 1.2) {
+              segmentStartRef.current = sec;
+              lastValidTimeRef.current = sec;
+            }
           } else if (data.event === 'timeupdate' || data.event === 'seeked') {
+            if (Date.now() < enforcingUntilRef.current) return;
             const sec = Number(data.data?.seconds ?? 0);
             const dur = Number(data.data?.duration ?? durationRef.current);
             if (dur > 0) durationRef.current = dur;
@@ -561,12 +576,13 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
             if (seekLockActiveRef.current) {
               const ceiling = getSeekCeiling(dur);
               if (sec > ceiling + 1.2) {
-                const snap = Math.max(0, ceiling - 0.3);
-                postVimeoCommand('setCurrentTime', snap);
-                segmentStartRef.current = snap;
-                lastValidTimeRef.current = snap;
-                currentTimeRef.current = snap;
-                notifySeekBlocked(ceiling);
+                const backSec = getReturnPointBeforeSeek(ceiling);
+                enforcingUntilRef.current = Date.now() + 900;
+                notifySeekBlocked(backSec, ceiling);
+                postVimeoCommand('setCurrentTime', backSec);
+                segmentStartRef.current = backSec;
+                lastValidTimeRef.current = backSec;
+                currentTimeRef.current = backSec;
                 return;
               }
             }
@@ -673,8 +689,9 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
         if (seekLockActiveRef.current) {
           const ceiling = getSeekCeiling();
           if (target > ceiling) {
-            target = Math.max(0, ceiling - 0.3);
-            notifySeekBlocked(ceiling);
+            const backSec = getReturnPointBeforeSeek(ceiling);
+            notifySeekBlocked(backSec, ceiling);
+            target = backSec;
           }
         }
         segmentStartRef.current = target;
@@ -743,12 +760,14 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
             segmentStartRef.current = next;
           } else if (e.key === 'ArrowRight') {
             e.preventDefault();
-            let next = Math.min(p.getDuration() || p.getCurrentTime() + 5, p.getCurrentTime() + 5);
+            const before = p.getCurrentTime();
+            let next = Math.min(p.getDuration() || before + 5, before + 5);
             if (seekLockActiveRef.current) {
               const ceiling = getSeekCeiling(p.getDuration());
               if (next > ceiling) {
-                next = Math.max(0, ceiling - 0.25);
-                notifySeekBlocked(ceiling);
+                const backSec = getReturnPointBeforeSeek(ceiling);
+                notifySeekBlocked(backSec, ceiling);
+                next = backSec;
               }
             }
             p.seekTo(next, true);
@@ -773,12 +792,14 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
           segmentStartRef.current = v.currentTime;
         } else if (e.key === 'ArrowRight') {
           e.preventDefault();
-          let next = Math.min(v.duration || v.currentTime + 5, v.currentTime + 5);
+          const before = v.currentTime;
+          let next = Math.min(v.duration || before + 5, before + 5);
           if (seekLockActiveRef.current) {
             const ceiling = getSeekCeiling(v.duration);
             if (next > ceiling) {
-              next = Math.max(0, ceiling - 0.25);
-              notifySeekBlocked(ceiling);
+              const backSec = getReturnPointBeforeSeek(ceiling);
+              notifySeekBlocked(backSec, ceiling);
+              next = backSec;
             }
           }
           v.currentTime = next;
@@ -796,7 +817,14 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
 
       window.addEventListener('keydown', onKeyDown);
       return () => window.removeEventListener('keydown', onKeyDown);
-    }, [source?.provider, onQuickNoteShortcut, postVimeoCommand, getSeekCeiling, notifySeekBlocked]);
+    }, [
+      source?.provider,
+      onQuickNoteShortcut,
+      postVimeoCommand,
+      getSeekCeiling,
+      getReturnPointBeforeSeek,
+      notifySeekBlocked,
+    ]);
 
     function handleSpeedChange(rate: number) {
       setPlaybackRate(rate);
@@ -877,8 +905,11 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
                   }}
                   onPlay={(e) => {
                     isPlayingRef.current = true;
-                    segmentStartRef.current = e.currentTarget.currentTime;
-                    lastValidTimeRef.current = e.currentTarget.currentTime;
+                    const cur = e.currentTarget.currentTime;
+                    if (!seekLockActiveRef.current || cur <= getSeekCeiling(e.currentTarget.duration) + 0.8) {
+                      segmentStartRef.current = cur;
+                      lastValidTimeRef.current = cur;
+                    }
                   }}
                   onSeeking={(e) => {
                     if (!seekLockActiveRef.current || isEnforcingSeekRef.current) return;
@@ -886,15 +917,15 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
                     const ceiling = getSeekCeiling(v.duration);
                     if (v.currentTime > ceiling + 0.8) {
                       isEnforcingSeekRef.current = true;
-                      const snap = Math.max(0, ceiling - 0.25);
-                      v.currentTime = snap;
-                      segmentStartRef.current = snap;
-                      lastValidTimeRef.current = snap;
-                      currentTimeRef.current = snap;
-                      notifySeekBlocked(ceiling);
+                      const backSec = getReturnPointBeforeSeek(ceiling);
+                      notifySeekBlocked(backSec, ceiling);
+                      v.currentTime = backSec;
+                      segmentStartRef.current = backSec;
+                      lastValidTimeRef.current = backSec;
+                      currentTimeRef.current = backSec;
                       window.setTimeout(() => {
                         isEnforcingSeekRef.current = false;
-                      }, 120);
+                      }, 150);
                     }
                   }}
                   onTimeUpdate={(e) => {
@@ -905,15 +936,15 @@ export const SmartVideoPlayer = React.forwardRef<VideoPlayerHandle, SmartVideoPl
                       const ceiling = getSeekCeiling(v.duration);
                       if (nowSec > ceiling + 0.8) {
                         isEnforcingSeekRef.current = true;
-                        const snap = Math.max(0, ceiling - 0.25);
-                        v.currentTime = snap;
-                        segmentStartRef.current = snap;
-                        lastValidTimeRef.current = snap;
-                        currentTimeRef.current = snap;
-                        notifySeekBlocked(ceiling);
+                        const backSec = getReturnPointBeforeSeek(ceiling);
+                        notifySeekBlocked(backSec, ceiling);
+                        v.currentTime = backSec;
+                        segmentStartRef.current = backSec;
+                        lastValidTimeRef.current = backSec;
+                        currentTimeRef.current = backSec;
                         window.setTimeout(() => {
                           isEnforcingSeekRef.current = false;
-                        }, 120);
+                        }, 150);
                         return;
                       }
                     }
